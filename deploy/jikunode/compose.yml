@@ -1,0 +1,32 @@
+# JikuNode container. Run from the repository root:
+#   docker compose -f deploy/jikunode/compose.yml up -d --build
+#
+# Bind once inside the container (the config volume keeps the node identity):
+#   docker compose -f deploy/jikunode/compose.yml run --rm jikunode \
+#     bind <code> --hub https://hub.jiku.app --name <name>
+services:
+  jikunode:
+    build:
+      context: ../..
+      dockerfile: deploy/jikunode/Dockerfile
+    image: ghcr.io/jiku-app/jikunode:latest
+    container_name: jikunode
+    restart: unless-stopped
+    # No published ports on purpose: the status page is loopback-only inside
+    # the container. Read it with:
+    #   docker compose -f deploy/jikunode/compose.yml exec jikunode jikunode status
+    #   docker compose -f deploy/jikunode/compose.yml exec jikunode jikunode logs
+    environment:
+      XDG_CONFIG_HOME: /home/nonroot/.config
+    volumes:
+      - jikunode-config:/home/nonroot/.config
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  jikunode-config:

@@ -1,0 +1,46 @@
+[Unit]
+Description=JikuNode supplier egress agent
+Documentation=https://jiku.app/docs/providers
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jikunode
+Group=jikunode
+ExecStart=/usr/local/bin/jikunode run
+Restart=always
+RestartSec=5s
+
+# The config directory is /var/lib/jikunode/.config/jikunode (mode 0700); the
+# private key lives there with mode 0600. Bind once as the same user:
+#   sudo -u jikunode XDG_CONFIG_HOME=/var/lib/jikunode/.config \
+#     jikunode bind <code> --hub https://hub.jiku.app --name <name>
+Environment=XDG_CONFIG_HOME=/var/lib/jikunode/.config
+StateDirectory=jikunode
+StateDirectoryMode=0700
+UMask=0077
+
+# Hardening. The node needs outbound TCP to the hub and to upstream hosts, and
+# one loopback listener for its status page; nothing else.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
