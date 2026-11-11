@@ -39,6 +39,7 @@ jobs:
             tar -C dist -czf "dist/jikunode_${version}_linux_${arch}.tar.gz" \
               "jikunode_${version}_linux_${arch}"
             rm -rf "$dir"
+          done
           (cd dist && sha256sum *.tar.gz > checksums.txt)
 
       - name: Create GitHub release
