@@ -24,6 +24,12 @@ jikunode bind <code> --hub https://hub.example.com --name kitchen-pi
 jikunode run
 ```
 
+Without `--hub`, `jikunode bind <code>` discovers the current hub from
+`https://dev.jiku.app/api/v1/public/node-config`. Discovery sends no binding
+code or private key, requires a valid HTTPS hub URL, and times out after
+10 seconds. Use `--hub URL` to bypass discovery. Discovery failures are
+reported rather than silently falling back to a stale address. The selected
+hub is saved at binding time and reused for reconnects.
 The bind command generates the ed25519 private key locally. Only the public
 key is sent to the hub. Configuration and the private key are written with
 restrictive permissions and are never printed.
@@ -37,6 +43,8 @@ jikunode status
 jikunode pause
 jikunode resume
 jikunode logs --n 50
+jikunode uninstall              # remove the user service and binary
+jikunode uninstall --purge     # also remove config/key/state/cache
 jikunode version
 ```
 
@@ -83,6 +91,10 @@ go test ./...
 go vet ./...
 go build ./cmd/jikunode
 ```
+
+`uninstall` removes the per-user systemd unit and installed binary. Add
+`--purge` to remove the node key, config, local state and cache. It does not
+remove the user's shared systemd journal history.
 
 The node repository contains no provider credentials, production database
 code, or hosted-service secrets. Hub-side implementations remain in the

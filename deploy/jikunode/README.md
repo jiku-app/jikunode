@@ -10,7 +10,31 @@ node's own ed25519 private key (mode `0600`).
 
 ## Install
 
-Build from the repository root (Go 1.27):
+The recommended release installer is a per-user installation and does not
+require root:
+
+```sh
+curl -fsSL https://dev.jiku.app/node/install.sh | sh
+```
+
+After binding, enable the user service:
+
+```sh
+systemctl --user enable --now jikunode.service
+```
+
+The installer places the binary in `$HOME/.local/bin`, the unit in
+`$XDG_CONFIG_HOME/systemd/user`, and the node key under
+`$XDG_CONFIG_HOME/jikunode`. To remove it:
+
+```sh
+jikunode uninstall              # service and binary
+jikunode uninstall --purge     # also node key/config/state/cache
+```
+
+The purge command does not delete the user's shared systemd journal.
+
+For a system-wide installation, build from the repository root (Go 1.27):
 
 ```sh
 go build -o jikunode ./cmd/jikunode
@@ -27,9 +51,9 @@ sudo systemctl enable --now jikunode
 
 ## Bind
 
-Get a one-time binding code from the provider page in the Jiku console
-(10-minute TTL, single use). Bind as the service user so the key lands in the
-directory the service reads:
+Get your fixed six-character binding code from the provider page in the
+Jiku console. It is reusable and does not expire. For the system-wide
+service, bind as the service user so the key lands in the directory it reads:
 
 ```sh
 sudo -u jikunode XDG_CONFIG_HOME=/var/lib/jikunode/.config \

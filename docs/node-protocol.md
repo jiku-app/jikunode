@@ -116,11 +116,13 @@ policy. The dial timeout is 10 s.
 
 A node identity is created out-of-band, before any tunnel:
 
-- The supplier accepts the provider terms once, then issues a single-use
+- The supplier accepts the provider terms once, then retrieves a reusable
   **binding code** from the provider console (`POST /api/v1/supplier/bind-codes`).
-  Codes are 16 characters from an ambiguity-free alphabet, stored only as a
-  SHA-256 hash, and expire after **10 minutes**; each is bound to the issuing
-  supplier, so any machine can run the node.
+  Codes contain five random uppercase alphanumeric characters and one checksum
+  character (six total). They are stored uniquely per user, reusable and do not
+  expire. Lowercase input is normalized. The checksum detects single-character
+  substitutions, not transpositions. These are account-routing identifiers,
+  not console credentials; no console approval is required for enrollment.
 - `jikunode bind <code> --hub <url> --name <name>` generates the ed25519
   keypair locally and calls:
 

@@ -37,6 +37,7 @@ Usage:
   jikunode resume [--port PORT]                    ask the hub to run this node
   jikunode status [--port PORT]                    print the loopback status JSON
   jikunode logs [--port PORT] [--n N]              print the last N log lines
+  jikunode uninstall [--purge]                    remove the user service and binary
   jikunode version                                 print the version
 
 The status server listens on 127.0.0.1 only and never accepts or shows a
@@ -63,6 +64,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdStatus(args[1:], stdout, stderr)
 	case "logs":
 		return cmdLogs(args[1:], stdout, stderr)
+	case "uninstall":
+		return cmdUninstall(args[1:], stdout, stderr)
 	case "version":
 		fmt.Fprintln(stdout, "jikunode "+Version)
 		return 0
@@ -79,7 +82,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 func cmdBind(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("jikunode bind", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	hub := fs.String("hub", "", "hub base URL (required for the first bind)")
+	hub := fs.String("hub", "", "hub base URL (defaults to public node discovery)")
 	name := fs.String("name", "", "node name (max 40 characters)")
 
 	// The documented form puts the code first, so take a leading positional
@@ -111,13 +114,12 @@ func cmdBind(args []string, stdout, stderr io.Writer) int {
 
 	hubURL := strings.TrimSpace(*hub)
 	if hubURL == "" {
-		if cfg, err := loadConfig(); err == nil {
-			hubURL = cfg.HubURL
+		var err error
+		hubURL, err = discoverHub(context.Background(), NodeConfigURL, http.DefaultClient)
+		if err != nil {
+			fmt.Fprintf(stderr, "jikunode: %v\n", err)
+			return 1
 		}
-	}
-	if hubURL == "" {
-		fmt.Fprintln(stderr, "--hub is required for the first bind")
-		return 2
 	}
 
 	cfg, err := bindNode(context.Background(), hubURL, code, *name)
