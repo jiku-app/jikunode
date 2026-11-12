@@ -103,6 +103,7 @@ func (l *NonceLog) Issue() ([]byte, error) {
 func MuxConfig() *yamux.Config {
 	cfg := yamux.DefaultConfig()
 	cfg.LogOutput = io.Discard
+	cfg.EnableKeepAlive = false
 	return cfg
 }
 
@@ -208,25 +209,69 @@ func (s *ServerSession) SendAck() error {
 
 // ControlHandler configures ServeControl.
 type ControlHandler struct {
-	// HeartbeatTimeout bounds the wait between heartbeats (0 => 30 s).
+	// HeartbeatTimeout overrides the declared interval's 3x timeout for tests.
 	HeartbeatTimeout time.Duration
-	// OnHeartbeat runs after every accepted heartbeat (RTT sampling).
-	OnHeartbeat func()
+	// OnHeartbeat receives the elapsed time between hub send and node echo.
+	OnHeartbeat func(time.Duration)
 	// OnSetState applies a node-initiated pause/run; an error fails the
 	// session so the node reconnects and retries instead of believing a
 	// state change that was never persisted.
 	OnSetState func(contract.RunState) error
 }
 
+// maxPendingHeartbeats bounds outstanding unechoed heartbeats per session.
+const maxPendingHeartbeats = 3
+
 // ServeControl is the hub's control read loop: it fails the session when no
 // heartbeat arrives within HeartbeatTimeout, applies SetState through
 // OnSetState, and rejects every other message as a protocol violation.
 func (s *ServerSession) ServeControl(h ControlHandler) error {
+	interval := time.Duration(s.hello.HeartbeatSeconds) * time.Second
 	if h.HeartbeatTimeout <= 0 {
-		h.HeartbeatTimeout = DefaultHeartbeatTimeout
+		h.HeartbeatTimeout = 3 * interval
 	}
+	stop := make(chan struct{})
+	defer close(stop)
+	// Send times of heartbeats not yet echoed, oldest first. A node that was
+	// asleep answers every queued heartbeat on wake-up, so each echo consumes
+	// the oldest outstanding send. The queue is capped at maxPendingHeartbeats:
+	// a node whose echoes lag by more than that many intervals fails the
+	// session, which is the 3x-interval contract (HeartbeatTimeout may be set
+	// larger, but never lets the queue grow past the cap).
+	var (
+		pendMu  sync.Mutex
+		pending []time.Time
+	)
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				s.mu.Lock()
+				pendMu.Lock()
+				if len(pending) >= maxPendingHeartbeats {
+					pendMu.Unlock()
+					s.mu.Unlock()
+					_ = s.Close() // echoes lag by more than the cap: fail the session
+					return
+				}
+				pending = append(pending, time.Now())
+				pendMu.Unlock()
+				err := WriteControl(s.ctrl, &Control{Heartbeat: &Heartbeat{}})
+				s.mu.Unlock()
+				if err != nil {
+					_ = s.Close()
+					return
+				}
+			}
+		}
+	}()
+	deadline := time.Now().Add(h.HeartbeatTimeout)
 	for {
-		s.ctrl.SetReadDeadline(time.Now().Add(h.HeartbeatTimeout))
+		s.ctrl.SetReadDeadline(deadline)
 		c, err := ReadControl(s.ctrl)
 		s.ctrl.SetReadDeadline(time.Time{})
 		if err != nil {
@@ -234,9 +279,18 @@ func (s *ServerSession) ServeControl(h ControlHandler) error {
 		}
 		switch {
 		case c.Heartbeat != nil:
-			if h.OnHeartbeat != nil {
-				h.OnHeartbeat()
+			pendMu.Lock()
+			if len(pending) == 0 {
+				pendMu.Unlock()
+				return errors.New("tunnel: unsolicited heartbeat echo")
 			}
+			when := pending[0]
+			pending = pending[1:]
+			pendMu.Unlock()
+			if h.OnHeartbeat != nil {
+				h.OnHeartbeat(time.Since(when))
+			}
+			deadline = time.Now().Add(h.HeartbeatTimeout)
 		case c.SetState != nil:
 			if !ValidRunState(c.SetState.State) {
 				return fmt.Errorf("tunnel: invalid run state %q", c.SetState.State)
@@ -273,26 +327,6 @@ func openStreamCtx(ys *yamux.Session, ctx context.Context) (*yamux.Stream, error
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-}
-
-// Ping measures the multiplexer round trip; used for heartbeat RTT metrics.
-func (s *ServerSession) Ping(timeout time.Duration) (time.Duration, error) {
-	done := make(chan pingResult, 1)
-	go func() {
-		d, err := s.ys.Ping()
-		done <- pingResult{d: d, err: err}
-	}()
-	select {
-	case r := <-done:
-		return r.d, r.err
-	case <-time.After(timeout):
-		return 0, errors.New("tunnel: ping timeout")
-	}
-}
-
-type pingResult struct {
-	d   time.Duration
-	err error
 }
 
 const streamDialTimeout = 5 * time.Second
@@ -400,6 +434,12 @@ func NewClientSession(cfg ClientConfig) (*ClientSession, error) {
 	if len(cfg.PrivateKey) != ed25519.PrivateKeySize {
 		return nil, errors.New("tunnel: ed25519 private key required")
 	}
+	if cfg.HeartbeatInterval <= 0 {
+		cfg.HeartbeatInterval = DefaultHeartbeatInterval
+	}
+	if cfg.HeartbeatInterval%time.Second != 0 || cfg.HeartbeatInterval < 5*time.Second || cfg.HeartbeatInterval > 300*time.Second {
+		return nil, errors.New("tunnel: heartbeat interval must be 5..300 whole seconds")
+	}
 	return &ClientSession{cfg: cfg}, nil
 }
 
@@ -471,8 +511,6 @@ func (s *ClientSession) Run(ctx context.Context, ws *websocket.Conn) error {
 
 	drainCh := make(chan error, 1)
 	go func() { drainCh <- s.watchDrain() }()
-	hbCh := make(chan error, 1)
-	go func() { hbCh <- s.heartbeats(runCtx) }()
 	serveCh := make(chan error, 1)
 	go func() { serveCh <- s.serveStreams(runCtx) }()
 
@@ -480,11 +518,6 @@ func (s *ClientSession) Run(ctx context.Context, ws *websocket.Conn) error {
 	case err := <-drainCh:
 		cancel()
 		_ = ys.Close() // unblocks serveStreams
-		<-serveCh
-		return err
-	case err := <-hbCh:
-		cancel()
-		_ = ys.Close()
 		<-serveCh
 		return err
 	case err := <-serveCh:
@@ -508,7 +541,7 @@ func (s *ClientSession) handshake() error {
 		return err
 	}
 	if err := WriteControl(ctrl, &Control{Hello: &Hello{
-		NodeID: s.cfg.NodeID, Version: s.cfg.Version, Nonce: nonce,
+		NodeID: s.cfg.NodeID, Version: s.cfg.Version, Nonce: nonce, HeartbeatSeconds: int(s.heartbeatInterval() / time.Second),
 	}}); err != nil {
 		return fmt.Errorf("tunnel: send hello: %w", err)
 	}
@@ -545,30 +578,21 @@ func (s *ClientSession) handshake() error {
 // stream fails. Any message other than Drain is a protocol violation.
 func (s *ClientSession) watchDrain() error {
 	for {
+		s.ctrl.SetReadDeadline(time.Now().Add(3 * s.heartbeatInterval()))
 		c, err := ReadControl(s.ctrl)
 		if err != nil {
 			return fmt.Errorf("tunnel: control read: %w", err)
+		}
+		if c.Heartbeat != nil {
+			if err := s.writeControl(&Control{Heartbeat: &Heartbeat{}}); err != nil {
+				return fmt.Errorf("tunnel: heartbeat echo: %w", err)
+			}
+			continue
 		}
 		if c.Drain == nil {
 			return errors.New("tunnel: unexpected control message")
 		}
 		return fmt.Errorf("%w: %s", ErrDrained, c.Drain.Reason)
-	}
-}
-
-// heartbeats sends Heartbeat until ctx is done or a write fails.
-func (s *ClientSession) heartbeats(ctx context.Context) error {
-	t := time.NewTicker(s.heartbeatInterval())
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-t.C:
-			if err := s.writeControl(&Control{Heartbeat: &Heartbeat{}}); err != nil {
-				return fmt.Errorf("tunnel: heartbeat: %w", err)
-			}
-		}
 	}
 }
 

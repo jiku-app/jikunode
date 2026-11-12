@@ -3,6 +3,7 @@ package tunnel
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"io"
 	"strings"
@@ -65,4 +66,23 @@ func TestControlMessageTooLarge_Rejected(t *testing.T) {
 			t.Fatalf("round trip mismatch: %+v", out)
 		}
 	})
+}
+
+func TestHelloWireShapeCarriesNoIdentityKeyOrName(t *testing.T) {
+	b, err := json.Marshal(&Control{Hello: &Hello{NodeID: "n", Version: "v", Nonce: []byte{1}, HeartbeatSeconds: 10}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]map[string]any
+	if err = json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	if len(m["hello"]) != 4 {
+		t.Fatalf("hello fields: %v", m["hello"])
+	}
+	for _, k := range []string{"node_id", "version", "nonce", "heartbeat_seconds"} {
+		if _, ok := m["hello"][k]; !ok {
+			t.Fatalf("missing %s in %s", k, b)
+		}
+	}
 }

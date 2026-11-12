@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"io"
+	"github.com/jiku-app/jikunode/internal/nodeagent"
 	"net/http"
 	"strings"
 	"testing"
@@ -13,14 +14,14 @@ func TestDiscoveryRejectsInvalidResponses(t *testing.T) {
 		client := &http.Client{Transport: captureHubTransport(func(r *http.Request) (*http.Response, error) {
 			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
 		})}
-		if _, err := discoverHub(context.Background(), NodeConfigURL, client); err == nil {
+		if _, err := nodeagent.DiscoverHub(context.Background(), nodeagent.NodeConfigURL, client); err == nil {
 			t.Fatalf("accepted invalid response %s", body)
 		}
 	}
 	client := &http.Client{Transport: captureHubTransport(func(r *http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: 503, Body: io.NopCloser(strings.NewReader("unavailable"))}, nil
 	})}
-	if _, err := discoverHub(context.Background(), NodeConfigURL, client); err == nil {
+	if _, err := nodeagent.DiscoverHub(context.Background(), nodeagent.NodeConfigURL, client); err == nil {
 		t.Fatal("accepted unavailable discovery")
 	}
 }

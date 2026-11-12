@@ -1,8 +1,7 @@
-package main
+package nodeagent
 
 import (
 	"context"
-	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -31,6 +30,9 @@ const (
 	DefaultStableAfter = 60 * time.Second
 	// DefaultDialTimeout bounds one websocket dial.
 	DefaultDialTimeout = 15 * time.Second
+	// DefaultPollInterval is how often an unbound runner checks for the
+	// bound marker. The check is a local stat, never a network call.
+	DefaultPollInterval = 2 * time.Second
 	// tunnelPath is the hub's node-tunnel websocket route.
 	tunnelPath = "/v1/node/tunnel"
 	// bindPath is the hub's binding route.
@@ -40,21 +42,40 @@ const (
 // errPaused is returned for every new stream while the node is paused.
 var errPaused = errors.New("node is paused")
 
+// Hooks observes tunnel lifecycle and optionally gates new streams while paused.
+type Hooks interface {
+	// OnUnbound is called when the runner starts idling because the node is
+	// not bound. OnBound is called when the bound marker appears.
+	OnUnbound()
+	OnBound(*Config)
+	OnConnect(*tunnel.ClientSession, <-chan struct{})
+	OnDisconnect(error)
+	OnBackoff(error)
+	Paused() bool
+}
+
 // Runner keeps one node connected to the hub: dial, authenticate, serve
 // streams, and reconnect with jittered exponential backoff until ctx ends.
+// Until the node is bound (the bound marker exists in Dir) it idles and makes
+// no network call at all; the hub URL, node id and key are read from Dir each
+// time a session starts. The bound marker and config are read only before each
+// connect: a change to them while a session is live does not affect that
+// session and takes effect at the next reconnect.
 type Runner struct {
-	HubURL     string
-	NodeID     string
-	Version    string
-	PrivateKey ed25519.PrivateKey
-	Policy     *tunnel.DialPolicy
-	Logger     *slog.Logger
-	Status     *StatusServer
+	Dir               string
+	Version           string
+	Policy            *tunnel.DialPolicy
+	Logger            *slog.Logger
+	Hooks             Hooks
+	Network           Network
+	HeartbeatInterval time.Duration
 
 	// Tunables; zero means the default.
 	MinBackoff  time.Duration
 	MaxBackoff  time.Duration
 	StableAfter time.Duration
+	// PollInterval is the bound-marker poll period while unbound.
+	PollInterval time.Duration
 
 	// Rand returns jitter entropy in [0,1); nil means math/rand.Float64.
 	Rand func() float64
@@ -87,6 +108,13 @@ func (r *Runner) stableAfter() time.Duration {
 	return r.StableAfter
 }
 
+func (r *Runner) pollInterval() time.Duration {
+	if r.PollInterval <= 0 {
+		return DefaultPollInterval
+	}
+	return r.PollInterval
+}
+
 func (r *Runner) logger() *slog.Logger {
 	if r.Logger == nil {
 		return slog.New(slog.DiscardHandler)
@@ -99,7 +127,7 @@ func (r *Runner) logger() *slog.Logger {
 func (r *Runner) Run(ctx context.Context) error {
 	attempt := 0
 	for {
-		if err := ctx.Err(); err != nil {
+		if err := r.waitBound(ctx); err != nil {
 			return err
 		}
 		started := time.Now()
@@ -110,10 +138,13 @@ func (r *Runner) Run(ctx context.Context) error {
 		if time.Since(started) >= r.stableAfter() {
 			attempt = 0
 		}
-		delay := backoffDelay(attempt, r.minBackoff(), r.maxBackoff(), r.Rand)
+		delay := BackoffDelay(attempt, r.minBackoff(), r.maxBackoff(), r.Rand)
+		if r.Hooks != nil {
+			r.Hooks.OnBackoff(err)
+		}
 		attempt++
 		r.logger().Warn("jikunode: reconnect scheduled",
-			"event", "reconnect_scheduled", "node_id", r.NodeID,
+			"event", "reconnect_scheduled",
 			"attempt", attempt, "delay_ms", delay.Milliseconds(), "error", err.Error())
 		select {
 		case <-ctx.Done():
@@ -123,16 +154,54 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 }
 
-// connect runs one session: dial, handshake, serve until it ends.
+// waitBound returns once the bound marker exists. While it does not, the
+// runner is idle: it polls the marker with a local stat and nothing else (no
+// discovery, no DNS, no dial).
+func (r *Runner) waitBound(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if IsBound(r.Dir) {
+		return nil
+	}
+	if r.Hooks != nil {
+		r.Hooks.OnUnbound()
+	}
+	r.logger().Info("jikunode: not bound; idling until a binding code is entered", "event", "unbound")
+	t := time.NewTicker(r.pollInterval())
+	defer t.Stop()
+	for !IsBound(r.Dir) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-t.C:
+		}
+	}
+	return nil
+}
+
+// connect runs one session: load the bound identity from disk, dial,
+// handshake, serve until it ends.
 func (r *Runner) connect(ctx context.Context) error {
-	endpoint, err := tunnelURL(r.HubURL)
+	cfg, err := LoadConfig(r.Dir)
+	if err != nil {
+		return err
+	}
+	key, err := LoadPrivateKey(cfg.KeyPath)
+	if err != nil {
+		return err
+	}
+	if r.Hooks != nil {
+		r.Hooks.OnBound(cfg)
+	}
+	endpoint, err := TunnelURL(cfg.HubURL)
 	if err != nil {
 		return err
 	}
 	dial := r.Dial
 	if dial == nil {
 		dial = func(ctx context.Context, u string) (*websocket.Conn, error) {
-			conn, _, err := websocket.Dial(ctx, u, nil)
+			conn, _, err := websocket.Dial(ctx, u, &websocket.DialOptions{HTTPClient: r.Network.Client(nil)})
 			return conn, err
 		}
 	}
@@ -148,28 +217,29 @@ func (r *Runner) connect(ctx context.Context) error {
 	// live, and closing ready there orders every later SendSetState after it.
 	logger := r.logger()
 	var ready *handshakeReady
-	if r.Status != nil {
+	if r.Hooks != nil {
 		ready = newHandshakeReady()
 		logger = slog.New(&handshakeReadyHandler{Handler: logger.Handler(), ready: ready})
 	}
 	sess, err := tunnel.NewClientSession(tunnel.ClientConfig{
-		NodeID:     r.NodeID,
-		Version:    r.Version,
-		PrivateKey: r.PrivateKey,
-		Policy:     r.policy(),
-		Logger:     logger,
+		NodeID:            cfg.NodeID,
+		Version:           r.Version,
+		PrivateKey:        key,
+		Policy:            r.policy(),
+		HeartbeatInterval: r.HeartbeatInterval,
+		Logger:            logger,
 	})
 	if err != nil {
 		_ = ws.Close(websocket.StatusInternalError, "")
 		return err
 	}
-	if r.Status != nil {
-		r.Status.OnConnect(sess, ready.channel())
+	if r.Hooks != nil {
+		r.Hooks.OnConnect(sess, ready.channel())
 	}
-	r.logger().Info("jikunode: connected", "event", "session_established", "node_id", r.NodeID)
+	r.logger().Info("jikunode: connected", "event", "session_established", "node_id", cfg.NodeID)
 	err = sess.Run(ctx, ws)
-	if r.Status != nil {
-		r.Status.OnDisconnect(err)
+	if r.Hooks != nil {
+		r.Hooks.OnDisconnect(err)
 	}
 	return err
 }
@@ -234,10 +304,15 @@ func (r *Runner) policy() *tunnel.DialPolicy {
 	if base == nil {
 		base = tunnel.DefaultDialPolicy()
 	}
-	if r.Status == nil {
+	if r.Network.Resolver != nil {
+		copyPolicy := *base
+		copyPolicy.Resolver = r.Network.Resolver
+		base = &copyPolicy
+	}
+	if r.Hooks == nil {
 		return base
 	}
-	paused := r.Status.Paused
+	paused := r.Hooks.Paused
 	gated := &tunnel.DialPolicy{
 		Resolver: gatedResolver{inner: base.Resolver, paused: paused},
 		Timeout:  base.Timeout,
@@ -278,7 +353,7 @@ func (g gatedResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPA
 // backoffDelay returns the jittered delay for a reconnect attempt. The base
 // doubles from min to max; jitter adds up to 50% on top so a fleet of nodes
 // does not reconnect in lockstep, and the result never leaves [min, max].
-func backoffDelay(attempt int, min, max time.Duration, rnd func() float64) time.Duration {
+func BackoffDelay(attempt int, min, max time.Duration, rnd func() float64) time.Duration {
 	if min <= 0 {
 		min = DefaultMinBackoff
 	}
@@ -316,7 +391,7 @@ func backoffDelay(attempt int, min, max time.Duration, rnd func() float64) time.
 
 // tunnelURL turns the configured hub base URL into the websocket tunnel
 // endpoint, keeping any path prefix.
-func tunnelURL(hubURL string) (string, error) {
+func TunnelURL(hubURL string) (string, error) {
 	return hubEndpoint(hubURL, tunnelPath, map[string]string{
 		"http":  "ws",
 		"https": "wss",
@@ -326,7 +401,7 @@ func tunnelURL(hubURL string) (string, error) {
 }
 
 // httpURL turns the configured hub base URL into an HTTP endpoint for bind.
-func httpURL(hubURL, path string) (string, error) {
+func HTTPURL(hubURL, path string) (string, error) {
 	return hubEndpoint(hubURL, path, map[string]string{
 		"http":  "http",
 		"https": "https",
@@ -347,10 +422,23 @@ func hubEndpoint(hubURL, path string, schemes map[string]string) (string, error)
 	if !ok {
 		return "", fmt.Errorf("hub URL %q must use http(s) or ws(s)", hubURL)
 	}
+	if (scheme == "http" || scheme == "ws") && !loopbackHost(u.Hostname()) {
+		return "", fmt.Errorf("hub URL %q must use https or wss unless the host is loopback", hubURL)
+	}
 	u.Scheme = scheme
 	u.Path = strings.TrimSuffix(u.Path, "/") + path
 	u.RawQuery = ""
 	u.Fragment = ""
 	u.User = nil
 	return u.String(), nil
+}
+
+// loopbackHost reports whether host is localhost or a loopback IP literal
+// (127.0.0.0/8, ::1). Only such hosts may use plaintext http/ws.
+func loopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

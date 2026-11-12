@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jiku-app/jikunode/internal/contract"
+	"github.com/jiku-app/jikunode/internal/nodeagent"
 	"github.com/jiku-app/jikunode/internal/tunnel"
 )
 
@@ -115,6 +116,7 @@ type statusSnapshot struct {
 	NodeID        string     `json:"node_id"`
 	Version       string     `json:"version"`
 	HubURL        string     `json:"hub_url"`
+	Bound         bool       `json:"bound"`
 	Connected     bool       `json:"connected"`
 	Paused        bool       `json:"paused"`
 	ConnectedAt   *time.Time `json:"connected_at,omitempty"`
@@ -143,6 +145,7 @@ type StatusServer struct {
 	paused    atomic.Bool
 
 	mu          sync.Mutex
+	bound       bool
 	connected   bool
 	connectedAt time.Time
 	lastError   string
@@ -171,7 +174,11 @@ func NewStatusServer(opts StatusOptions) *StatusServer {
 }
 
 // NodeID returns the bound node id.
-func (s *StatusServer) NodeID() string { return s.nodeID }
+func (s *StatusServer) NodeID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.nodeID
+}
 
 // Port returns the configured status port.
 func (s *StatusServer) Port() int { return s.port }
@@ -181,6 +188,22 @@ func (s *StatusServer) Logs() *LogRing { return s.logs }
 
 // Paused reports whether the node currently refuses new streams.
 func (s *StatusServer) Paused() bool { return s.paused.Load() }
+
+// OnUnbound records that the runner is idling until a binding code is entered.
+func (s *StatusServer) OnUnbound() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.bound = false
+}
+
+// OnBound records the bound identity the runner is about to connect with.
+func (s *StatusServer) OnBound(cfg *nodeagent.Config) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.bound = true
+	s.nodeID = cfg.NodeID
+	s.hubURL = cfg.HubURL
+}
 
 // OnConnect records a live tunnel session and makes it the target of the
 // control endpoints. ready is closed by the runner once the tunnel handshake
@@ -208,20 +231,32 @@ func (s *StatusServer) OnDisconnect(err error) {
 	}
 }
 
+// OnBackoff leaves the status page's disconnected state unchanged.
+func (s *StatusServer) OnBackoff(error) {}
+
 // Status returns a consistent snapshot.
 func (s *StatusServer) Status() statusSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	connected := false
+	if s.connected && s.ready != nil {
+		select {
+		case <-s.ready:
+			connected = true
+		default:
+		}
+	}
 	snap := statusSnapshot{
 		NodeID:        s.nodeID,
 		Version:       s.version,
 		HubURL:        s.hubURL,
-		Connected:     s.connected,
+		Bound:         s.bound,
+		Connected:     connected,
 		Paused:        s.paused.Load(),
 		LastError:     s.lastError,
 		UptimeSeconds: int64(time.Since(s.startedAt).Seconds()),
 	}
-	if s.connected && !s.connectedAt.IsZero() {
+	if connected && !s.connectedAt.IsZero() {
 		at := s.connectedAt
 		snap.ConnectedAt = &at
 	}
@@ -385,6 +420,10 @@ func (s *StatusServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if snap.Paused {
 		state = "paused"
 	}
+	binding := "unbound (run: jikunode bind XXXXX-XXXXX)"
+	if snap.Bound {
+		binding = "bound"
+	}
 	conn := "disconnected"
 	if snap.Connected {
 		conn = "connected"
@@ -396,6 +435,7 @@ func (s *StatusServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(&b, "<tr><th>node</th><td>%s</td></tr>", html.EscapeString(snap.NodeID))
 	fmt.Fprintf(&b, "<tr><th>version</th><td>%s</td></tr>", html.EscapeString(snap.Version))
 	fmt.Fprintf(&b, "<tr><th>hub</th><td>%s</td></tr>", html.EscapeString(snap.HubURL))
+	fmt.Fprintf(&b, "<tr><th>binding</th><td>%s</td></tr>", html.EscapeString(binding))
 	fmt.Fprintf(&b, "<tr><th>connection</th><td>%s</td></tr>", conn)
 	fmt.Fprintf(&b, "<tr><th>state</th><td>%s</td></tr>", state)
 	b.WriteString("</table><p>")

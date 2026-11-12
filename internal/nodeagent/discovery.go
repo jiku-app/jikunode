@@ -1,4 +1,4 @@
-package main
+package nodeagent
 
 import (
 	"context"
@@ -13,7 +13,7 @@ import (
 
 const NodeConfigURL = "https://dev.jiku.app/api/v1/public/node-config"
 
-func discoverHub(ctx context.Context, endpoint string, client *http.Client) (string, error) {
+func DiscoverHub(ctx context.Context, endpoint string, client *http.Client) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)

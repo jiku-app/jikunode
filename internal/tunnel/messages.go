@@ -43,23 +43,22 @@ const (
 	// DefaultChallengeTimeout bounds the node's Challenge read.
 	DefaultChallengeTimeout = 10 * time.Second
 
-	// DefaultHeartbeatInterval is how often the node sends a heartbeat.
+	// DefaultHeartbeatInterval is the node's declared hub heartbeat cadence.
 	DefaultHeartbeatInterval = 10 * time.Second
-
-	// DefaultHeartbeatTimeout is how long the hub waits without a heartbeat
-	// before failing the session.
-	DefaultHeartbeatTimeout = 30 * time.Second
 
 	// NonceSize is the size of both the Hello nonce and the Challenge nonce.
 	NonceSize = 32
 )
 
-// Hello is the node's first control message: its identity, agent version and
-// a fresh nonce that the proof signs together with the hub challenge.
+// Hello is the node's first control message: its node id, agent version and
+// a fresh nonce that the proof signs together with the hub challenge. The hub
+// looks the node up (it must already be bound); the key and name were
+// registered at bind time, never at connect time.
 type Hello struct {
-	NodeID  string `json:"node_id"`
-	Version string `json:"version"`
-	Nonce   []byte `json:"nonce"`
+	NodeID           string `json:"node_id"`
+	Version          string `json:"version"`
+	Nonce            []byte `json:"nonce"`
+	HeartbeatSeconds int    `json:"heartbeat_seconds"`
 }
 
 // Challenge carries the hub's 32 random bytes (crypto/rand).

@@ -17,7 +17,7 @@ SHA-256 checksum file.
 
 ## Bind and run
 
-A binding code is issued once by the provider console:
+A reusable 10-character binding code is available from the provider console:
 
 ```sh
 jikunode bind <code> --hub https://hub.example.com --name kitchen-pi
@@ -30,9 +30,10 @@ code or private key, requires a valid HTTPS hub URL, and times out after
 10 seconds. Use `--hub URL` to bypass discovery. Discovery failures are
 reported rather than silently falling back to a stale address. The selected
 hub is saved at binding time and reused for reconnects.
-The bind command generates the ed25519 private key locally. Only the public
+The node creates its identity and ed25519 private key locally. Only the public
 key is sent to the hub. Configuration and the private key are written with
-restrictive permissions and are never printed.
+restrictive permissions and are never printed. An unbound service stays idle;
+after binding, the running service connects automatically.
 
 Available commands:
 

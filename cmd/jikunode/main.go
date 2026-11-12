@@ -1,26 +1,21 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/jiku-app/jikunode/internal/contract"
+	"github.com/jiku-app/jikunode/internal/nodeagent"
 )
 
 // Version is the agent version reported in the tunnel Hello and on the
@@ -31,8 +26,9 @@ var Version = "0.1.0"
 const usageText = `jikunode - Jiku supplier egress node
 
 Usage:
-  jikunode bind <code> [--hub URL] [--name NAME]   register this node with a binding code
-  jikunode run [--port PORT]                       connect to the hub and serve streams
+  jikunode bind <code> [--hub URL] [--name NAME]   bind this node with a binding code (XXXXX-XXXXX,
+                                                   any case, dash optional)
+  jikunode run [--port PORT]                       idle until bound, then connect and serve streams
   jikunode pause [--port PORT]                     ask the hub to pause this node
   jikunode resume [--port PORT]                    ask the hub to run this node
   jikunode status [--port PORT]                    print the loopback status JSON
@@ -40,8 +36,15 @@ Usage:
   jikunode uninstall [--purge]                    remove the user service and binary
   jikunode version                                 print the version
 
+A node that is not bound makes no network connection at all. Bind it as the
+same user that runs the service: the code is saved in that user's config
+directory and the running service picks it up within a few seconds.
+
 The status server listens on 127.0.0.1 only and never accepts or shows a
 credential: the node holds none.`
+
+// geteuid is replaced in tests to exercise the root warning.
+var geteuid = os.Geteuid
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
@@ -112,130 +115,23 @@ func cmdBind(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	hubURL := strings.TrimSpace(*hub)
-	if hubURL == "" {
-		var err error
-		hubURL, err = discoverHub(context.Background(), NodeConfigURL, http.DefaultClient)
-		if err != nil {
-			fmt.Fprintf(stderr, "jikunode: %v\n", err)
-			return 1
-		}
-	}
-
-	cfg, err := bindNode(context.Background(), hubURL, code, *name)
+	dir, err := configDir()
 	if err != nil {
 		fmt.Fprintf(stderr, "jikunode: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "bound node %s to %s\n", cfg.NodeID, cfg.HubURL)
-	if path, err := configPath(); err == nil {
-		fmt.Fprintf(stdout, "config: %s\n", path)
+	if geteuid() == 0 {
+		fmt.Fprintf(stderr, "jikunode: warning: running as root; this binds root's config directory %s, "+
+			"which the user service never reads. Re-run as the user that runs the service.\n", dir)
 	}
-	fmt.Fprintln(stdout, "next: jikunode run")
+	cfg, err := nodeagent.Bind(context.Background(), dir, strings.TrimSpace(*hub), code, *name, Version, nodeagent.Network{})
+	if err != nil {
+		fmt.Fprintf(stderr, "jikunode: %v\n", err)
+		return 1
+	}
+	path, _ := configPath()
+	fmt.Fprintf(stdout, "bound node %s to %s\nwrote %s\nthe running service connects within a few seconds\n", cfg.NodeID, cfg.HubURL, path)
 	return 0
-}
-
-// bindPayload is the POST /v1/node/bind body.
-type bindPayload struct {
-	Code      string `json:"code"`
-	PublicKey string `json:"public_key"`
-	Name      string `json:"name"`
-	Version   string `json:"version"`
-}
-
-// bindResult is the success body.
-type bindResult struct {
-	NodeID string `json:"node_id"`
-}
-
-// bindNode generates a keypair locally, registers the public key with the hub
-// and only then writes the key and the config. A failed bind writes nothing.
-func bindNode(ctx context.Context, hubURL, code, name string) (*Config, error) {
-	endpoint, err := httpURL(hubURL, bindPath)
-	if err != nil {
-		return nil, err
-	}
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, fmt.Errorf("generate key: %w", err)
-	}
-	payload, err := json.Marshal(bindPayload{
-		Code:      strings.TrimSpace(code),
-		PublicKey: base64.StdEncoding.EncodeToString(pub),
-		Name:      strings.TrimSpace(name),
-		Version:   Version,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("encode binding request: %w", err)
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return nil, fmt.Errorf("build binding request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	client := &http.Client{Timeout: 20 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("contact hub %s: %w", endpoint, err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-	if err != nil {
-		return nil, fmt.Errorf("read hub response: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, bindFailure(resp.StatusCode, body)
-	}
-	var res bindResult
-	if err := json.Unmarshal(body, &res); err != nil || strings.TrimSpace(res.NodeID) == "" {
-		return nil, errors.New("hub response has no node_id")
-	}
-
-	dir, err := configDir()
-	if err != nil {
-		return nil, err
-	}
-	if err := ensureConfigDir(dir); err != nil {
-		return nil, err
-	}
-	keyPath := filepath.Join(dir, keyFileName)
-	if err := savePrivateKey(keyPath, priv); err != nil {
-		return nil, err
-	}
-	cfg := &Config{
-		HubURL:  strings.TrimRight(strings.TrimSpace(hubURL), "/"),
-		NodeID:  res.NodeID,
-		KeyPath: keyPath,
-	}
-	if err := saveConfig(cfg); err != nil {
-		// Never leave a key behind without the config that identifies it.
-		_ = os.Remove(keyPath)
-		return nil, err
-	}
-	return cfg, nil
-}
-
-// bindFailure maps a hub refusal to a user-facing error without echoing the
-// hub's body beyond its stable error code.
-func bindFailure(status int, body []byte) error {
-	var e struct {
-		Error string `json:"error"`
-	}
-	_ = json.Unmarshal(body, &e)
-	switch {
-	case status == http.StatusBadRequest && e.Error == "bind_code_invalid":
-		return errors.New("binding code invalid or expired")
-	case status == http.StatusTooManyRequests:
-		return errors.New("too many binding attempts; wait a minute and retry")
-	case status == http.StatusBadRequest:
-		return errors.New("hub rejected the binding request")
-	default:
-		return fmt.Errorf("hub refused the binding (status %d)", status)
-	}
 }
 
 // cmdRun implements: jikunode run [--port PORT].
@@ -247,12 +143,12 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	cfg, err := loadConfig()
+	dir, err := configDir()
 	if err != nil {
 		fmt.Fprintf(stderr, "jikunode: %v\n", err)
 		return 1
 	}
-	key, err := loadPrivateKey(cfg.KeyPath)
+	id, _, err := nodeagent.EnsureIdentity(dir)
 	if err != nil {
 		fmt.Fprintf(stderr, "jikunode: %v\n", err)
 		return 1
@@ -262,9 +158,8 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	logger := slog.New(slog.NewTextHandler(io.MultiWriter(stderr, ring),
 		&slog.HandlerOptions{Level: slog.LevelInfo}))
 	status := NewStatusServer(StatusOptions{
-		NodeID:  cfg.NodeID,
+		NodeID:  id.NodeID,
 		Version: Version,
-		HubURL:  cfg.HubURL,
 		Port:    *port,
 		Logs:    ring,
 	})
@@ -282,15 +177,13 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		}
 	}()
 	logger.Info("jikunode: starting", "event", "start",
-		"node_id", cfg.NodeID, "status_addr", ln.Addr().String())
+		"node_id", id.NodeID, "bound", nodeagent.IsBound(dir), "status_addr", ln.Addr().String())
 
-	runner := &Runner{
-		HubURL:     cfg.HubURL,
-		NodeID:     cfg.NodeID,
-		Version:    Version,
-		PrivateKey: key,
-		Logger:     logger,
-		Status:     status,
+	runner := &nodeagent.Runner{
+		Dir:     dir,
+		Version: Version,
+		Logger:  logger,
+		Hooks:   status,
 	}
 	err = runner.Run(ctx)
 	if err != nil && !errors.Is(err, context.Canceled) {
