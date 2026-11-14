@@ -35,7 +35,7 @@ jobs:
               -trimpath \
               -ldflags "-s -w -X main.Version=$VERSION" \
               -o "$dir/jikunode" ./cmd/jikunode
-            cp README.md LICENSE "$dir/"
+            cp README.md LICENSE deploy/jikunode/install-user.sh "$dir/"
             tar -C dist -czf "dist/jikunode_${version}_linux_${arch}.tar.gz" \
               "jikunode_${version}_linux_${arch}"
             rm -rf "$dir"

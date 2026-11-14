@@ -15,9 +15,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jiku-app/jikunode/internal/contract"
-	"github.com/jiku-app/jikunode/internal/nodeagent"
-	"github.com/jiku-app/jikunode/internal/tunnel"
+	"github.com/jiku-app/jikunode/contract"
+	"github.com/jiku-app/jikunode/nodeagent"
+	"github.com/jiku-app/jikunode/tunnel"
 )
 
 // Status-page constants. The listener is always 127.0.0.1; the port is the

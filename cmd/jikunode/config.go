@@ -10,7 +10,7 @@ package main
 import (
 	"crypto/ed25519"
 	"fmt"
-	"github.com/jiku-app/jikunode/internal/nodeagent"
+	"github.com/jiku-app/jikunode/nodeagent"
 	"os"
 	"path/filepath"
 	"strings"

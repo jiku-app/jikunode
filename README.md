@@ -4,6 +4,11 @@ JikuNode is the supplier-side Jiku egress agent. It dials out to a Jiku hub,
 works behind NAT, and carries encrypted upstream traffic without holding
 provider credentials or seeing plaintext requests.
 
+This repository is the single source of truth for the node agent and wire
+protocol. The hub and Android wrapper consume its public Go packages as a
+pinned `github.com/jiku-app/jikunode` module; see [CONTRIBUTING.md](CONTRIBUTING.md)
+for package boundaries, local workspaces and the protocol release workflow.
+
 ## Install from a release
 
 Download the archive for your platform from
@@ -17,7 +22,12 @@ SHA-256 checksum file.
 
 ## Bind and run
 
-A reusable 10-character binding code is available from the provider console:
+After verifying a release, `deploy/jikunode/install-user.sh /path/to/jikunode`
+installs and starts the per-user service when a systemd user manager is available.
+For operation after logout, an administrator may need `loginctl enable-linger USER`.
+The service creates its identity offline and stays idle until bound.
+
+A reusable 10-character binding code (`XXXXX-XXXXX`) is available from the provider console:
 
 ```sh
 jikunode bind <code> --hub https://hub.example.com --name kitchen-pi
@@ -52,7 +62,7 @@ jikunode version
 ## Protocol
 
 The wire protocol is documented in [`docs/node-protocol.md`](docs/node-protocol.md)
-and implemented in [`internal/tunnel`](internal/tunnel). The node uses a
+and implemented in [`tunnel`](tunnel). The node uses a
 WebSocket connection with yamux multiplexing, an ed25519 challenge-response
 handshake, lease heartbeats, and a fail-closed post-DNS destination policy.
 

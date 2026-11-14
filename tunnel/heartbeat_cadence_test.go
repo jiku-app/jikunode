@@ -2,6 +2,7 @@ package tunnel
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"sync/atomic"
 	"testing"
@@ -52,7 +53,7 @@ func TestIdleHeartbeatWireCadence(t *testing.T) {
 			return
 		}
 		if hello.HeartbeatSeconds != 5 {
-			result <- err
+			result <- fmt.Errorf("unexpected heartbeat interval %d", hello.HeartbeatSeconds)
 			return
 		}
 		if err = s.SendChallenge(); err != nil {

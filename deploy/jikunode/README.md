@@ -10,18 +10,15 @@ node's own ed25519 private key (mode `0600`).
 
 ## Install
 
-The recommended release installer is a per-user installation and does not
-require root:
+Install a verified binary with the canonical per-user installer:
 
 ```sh
-curl -fsSL https://dev.jiku.app/node/install.sh | sh
+deploy/jikunode/install-user.sh /path/to/jikunode
 ```
 
-After binding, enable the user service:
-
-```sh
-systemctl --user enable --now jikunode.service
-```
+It enables and starts the service when the systemd user manager is available;
+otherwise it reports an error. Operation after logout may require an
+administrator to run `loginctl enable-linger USER`.
 
 The installer places the binary in `$HOME/.local/bin`, the unit in
 `$XDG_CONFIG_HOME/systemd/user`, and the node key under
@@ -51,26 +48,29 @@ sudo systemctl enable --now jikunode
 
 ## Bind
 
-Get your fixed six-character binding code from the provider page in the
+Get your reusable 10-character binding code (`XXXXX-XXXXX`) from the provider page in the
 Jiku console. It is reusable and does not expire. For the system-wide
 service, bind as the service user so the key lands in the directory it reads:
 
 ```sh
 sudo -u jikunode XDG_CONFIG_HOME=/var/lib/jikunode/.config \
-  jikunode bind <code> --hub https://hub.jiku.app --name kitchen-pi
-sudo systemctl restart jikunode
+  jikunode bind <code>
 ```
 
-The command generates the keypair locally, registers only the public key and
-writes, on success only:
+The service creates its identity and key offline, then idles without any network
+connection until binding succeeds:
 
 | path | mode | contents |
 |---|---|---|
 | `$XDG_CONFIG_HOME/jikunode/` | `0700` | config directory |
-| `$XDG_CONFIG_HOME/jikunode/config.json` | `0600` | `hub_url`, `node_id`, `key_path` |
+| `$XDG_CONFIG_HOME/jikunode/config.json` | `0600` | `hub_url`, `node_id`, `name`, `key_path` |
 | `$XDG_CONFIG_HOME/jikunode/node.key` | `0600` | base64 of the 32-byte ed25519 seed |
 
-A failed bind writes nothing. Writes are atomic (temp file + rename).
+Binding uses this existing identity and registers its public key with an HTTP
+challenge and bind-proof-v2 signature; it opens no temporary tunnel. It writes
+`config.json` and then the `bound` marker, which the running service picks up
+without a restart. Writes are atomic (temp file + rename).
+The offline UUID is stored in `node.id` (mode `0600`).
 
 ## Run
 
@@ -120,8 +120,8 @@ dial. There is no host or port allowlist.
 
 ```sh
 docker compose -f deploy/jikunode/compose.yml up -d --build
-docker compose -f deploy/jikunode/compose.yml run --rm jikunode \
-  bind <code> --hub https://hub.jiku.app --name <name>
+docker compose -f deploy/jikunode/compose.yml exec jikunode jikunode \
+  bind <code>
 ```
 
 The image is a multi-stage build producing a static binary on

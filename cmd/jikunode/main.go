@@ -14,8 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jiku-app/jikunode/internal/contract"
-	"github.com/jiku-app/jikunode/internal/nodeagent"
+	"github.com/jiku-app/jikunode/contract"
+	"github.com/jiku-app/jikunode/nodeagent"
 )
 
 // Version is the agent version reported in the tunnel Hello and on the

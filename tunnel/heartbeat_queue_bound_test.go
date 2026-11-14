@@ -48,9 +48,11 @@ func TestHeartbeatPendingQueueIsBounded(t *testing.T) {
 			served <- err
 			return
 		}
+		// Accelerate the queue test only after validating a wire-legal Hello.
+		s.hello.HeartbeatSeconds = 1
 		served <- s.ServeControl(ControlHandler{HeartbeatTimeout: time.Hour})
 	}()
-	if err = WriteControl(ctrl, &Control{Hello: &Hello{HeartbeatSeconds: 1}}); err != nil {
+	if err = WriteControl(ctrl, &Control{Hello: &Hello{HeartbeatSeconds: 5}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = ReadControl(ctrl); err != nil {

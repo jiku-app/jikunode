@@ -8,7 +8,10 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd ./cmd
-COPY internal ./internal
+COPY contract ./contract
+COPY tunnel ./tunnel
+COPY bindcode ./bindcode
+COPY nodeagent ./nodeagent
 ARG VERSION=0.1.0
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \

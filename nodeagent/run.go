@@ -14,7 +14,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/jiku-app/jikunode/internal/tunnel"
+	"github.com/jiku-app/jikunode/tunnel"
 )
 
 // Connection and backoff constants. The backoff doubles from MinBackoff to

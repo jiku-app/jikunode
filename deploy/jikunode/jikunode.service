@@ -13,9 +13,10 @@ Restart=always
 RestartSec=5s
 
 # The config directory is /var/lib/jikunode/.config/jikunode (mode 0700); the
-# private key lives there with mode 0600. Bind once as the same user:
+# private key lives there with mode 0600. The service idles offline until bound.
+# Bind as the same user:
 #   sudo -u jikunode XDG_CONFIG_HOME=/var/lib/jikunode/.config \
-#     jikunode bind <code> --hub https://hub.jiku.app --name <name>
+#     jikunode bind <code>
 Environment=XDG_CONFIG_HOME=/var/lib/jikunode/.config
 StateDirectory=jikunode
 StateDirectoryMode=0700

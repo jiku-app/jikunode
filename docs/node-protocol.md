@@ -1,10 +1,12 @@
 # Jiku node protocol
 
-The wire protocol between a supplier's **JikuNode** agent (`cmd/jikunode`)
-and the jiku hub (`internal/hub`, running in-process inside `jikud` on
-`JIKU_HUB_ADDR`, default `127.0.0.1:8319`). This document describes the
-protocol as implemented; the code (`internal/tunnel`, `internal/hub`,
-`internal/nodeagent`, `cmd/jikunode`, `mobile`) is the source of truth.
+This is the canonical wire specification for the supplier-side JikuNode agent
+and the `jiku.app` hub. The protocol implementation lives only in this module's
+`tunnel/`, `nodeagent/`, `bindcode/` and `contract/` packages; the hub and Android
+wrapper import those public packages. Hub implementation and integration tests
+live in `jiku.app`, not here. Protocol changes are released here as `vX.Y.Z`
+and consumed there with a pinned module update (see `CONTRIBUTING.md`). There
+is no version negotiation or compatibility path.
 
 The node **dials out** to the hub, so it works behind NAT. The node is a pure
 byte pipe: TLS to the upstream always starts inside `jikud`, the node never
@@ -40,7 +42,7 @@ shape fails the session:
 | `hello` | node → hub | `node_id` (canonical UUID), `version` (≤ 64 bytes), `nonce` (32 bytes), `heartbeat_seconds` (required integer, 5..300) | must be the hub's first control read, within 5 s; invalid heartbeat interval closes the session. There is no `public_key` or `name`: both were registered at bind time |
 | `challenge` | hub → node | `nonce` (32 bytes, crypto/rand) | issued through a per-hub `NonceLog` that refuses duplicate nonces |
 | `proof` | node → hub | `signature` (64 bytes) | ed25519 signature, below |
-| `heartbeat` | hub → node → hub | — | hub sends one each declared interval (`heartbeat_seconds`; CLI 10 s, mobile 60 s); node immediately echoes it; the handshake ack is not echoed. Either side fails after 3 intervals without the peer heartbeat/echo; RTT measures send-to-echo time. The presence lease follows this negotiated window. Dead peers count as present for up to 3 intervals |
+| `heartbeat` | hub → node → hub | — | hub sends one each declared interval (`heartbeat_seconds`; CLI 10 s, mobile 60 s); node immediately echoes it; the handshake ack is not echoed. Either side fails after 3 intervals without the peer heartbeat/echo; RTT measures send-to-echo time. Heartbeat timeout follows this declared window. The separate hub presence lease is described below |
 | `set_state` | node → hub | `state`: `running` \| `paused` | node-initiated pause/run; a persistence error fails the session so the node reconnects instead of trusting a lost state change |
 | `reject` | hub → node | `reason`: `unknown_node` \| `revoked_node` | the hub refuses this identity for good; the node treats it as `tunnel.ErrRejected`, forgets its binding and stops reconnecting |
 | `drain` | hub → node | `reason` | graceful disconnect (e.g. hub shutdown); the node treats it as `tunnel.ErrDrained` |
@@ -51,7 +53,7 @@ shape fails the session:
 node                          hub
  ├── open control stream ────►│
  ├── hello ──────────────────►│  (node_id, version, nonce_N, heartbeat_seconds)
- │                            ├── look the node up: unknown or revoked -> close
+ │                            ├── look the node up: unknown or revoked -> reject, close
  │◄───────────────────────────┤── challenge (nonce_C)
  ├── proof ──────────────────►│  ed25519 over the signature message
  │                            ├── verify key possession (key stored at bind), register session
@@ -127,9 +129,9 @@ unbound sessions or inventory.
 The supplier obtains a fixed, reusable, rotatable binding code in the provider
 console after accepting provider terms, shown as `XXXXX-XXXXX`: 10 Crockford
 base32 symbols (`0-9A-Z` without `I L O U`), 9 random plus 1 Luhn mod 32 check
-symbol. Normalization (`internal/bindcode`) strips whitespace and `-`,
+symbol. Normalization (`bindcode`) strips whitespace and `-`,
 upper-cases and maps `O`->`0`, `I`/`L`->`1`; anything else, any other length
-and a bad checksum is invalid. Old 6-character codes are invalid. The CLI and
+and a bad checksum is invalid. Only this 10-character format is accepted. The CLI and
 app reject typos locally; the hub rejects a bad checksum as `invalid_request`
 before any database lookup.
 
@@ -210,3 +212,13 @@ Tunnel metrics (session gauge, reconnects, expired leases, heartbeat RTT) are
 exported through the OBS registry. Logging discipline (OBS S10): only node
 ids and event names are ever logged — payload bytes, dial targets, proxy URLs
 and secrets never appear.
+
+## Known edge cases
+
+The hub's stored presence lease (default 30 s, renewed every 10 s) is separate
+from the heartbeat failure window (3 times `heartbeat_seconds`). A live hub can
+renew presence while waiting for a mobile heartbeat; a crashed hub leaves its
+last lease until expiry and the next sweep. Heartbeat traffic is bounded to
+three pending echoes, but does not negotiate a different storage lease. If
+presence must exactly follow heartbeat cadence, the hub lease implementation
+and this specification must be changed together in a future design.

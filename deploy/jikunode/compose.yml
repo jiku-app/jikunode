@@ -2,8 +2,8 @@
 #   docker compose -f deploy/jikunode/compose.yml up -d --build
 #
 # Bind once inside the container (the config volume keeps the node identity):
-#   docker compose -f deploy/jikunode/compose.yml run --rm jikunode \
-#     bind <code> --hub https://hub.jiku.app --name <name>
+#   docker compose -f deploy/jikunode/compose.yml exec jikunode jikunode \
+#     bind <code>
 services:
   jikunode:
     build:

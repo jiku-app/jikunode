@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"io"
-	"github.com/jiku-app/jikunode/internal/nodeagent"
+	"github.com/jiku-app/jikunode/nodeagent"
 	"net/http"
 	"strings"
 	"testing"

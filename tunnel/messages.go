@@ -18,7 +18,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/jiku-app/jikunode/internal/contract"
+	"github.com/jiku-app/jikunode/contract"
 )
 
 // Wire constants. Timeouts are conservative: a peer that stalls any framing

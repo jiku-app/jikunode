@@ -15,7 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/jiku-app/jikunode/internal/bindcode"
+	"github.com/jiku-app/jikunode/bindcode"
 )
 
 const (

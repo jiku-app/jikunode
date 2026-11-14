@@ -3,8 +3,8 @@ package main
 import (
 	"bytes"
 	"io"
-	"github.com/jiku-app/jikunode/internal/bindcode"
-	"github.com/jiku-app/jikunode/internal/nodeagent"
+	"github.com/jiku-app/jikunode/bindcode"
+	"github.com/jiku-app/jikunode/nodeagent"
 	"net/http"
 	"strings"
 	"testing"

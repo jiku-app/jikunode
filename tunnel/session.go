@@ -15,7 +15,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/hashicorp/yamux"
 
-	"github.com/jiku-app/jikunode/internal/contract"
+	"github.com/jiku-app/jikunode/contract"
 )
 
 // signatureDomain separates tunnel proofs from every other ed25519 use.
@@ -160,6 +160,9 @@ func (s *ServerSession) AcceptControl(ctx context.Context, timeout time.Duration
 	}
 	if c.Hello == nil {
 		return nil, errors.New("tunnel: first control message must be hello")
+	}
+	if c.Hello.HeartbeatSeconds < 5 || c.Hello.HeartbeatSeconds > 300 {
+		return nil, errors.New("tunnel: heartbeat interval must be 5..300 seconds")
 	}
 	s.hello = c.Hello
 	return c.Hello, nil
@@ -446,7 +449,7 @@ func NewClientSession(cfg ClientConfig) (*ClientSession, error) {
 	if len(cfg.PrivateKey) != ed25519.PrivateKeySize {
 		return nil, errors.New("tunnel: ed25519 private key required")
 	}
-	if cfg.HeartbeatInterval <= 0 {
+	if cfg.HeartbeatInterval == 0 {
 		cfg.HeartbeatInterval = DefaultHeartbeatInterval
 	}
 	if cfg.HeartbeatInterval%time.Second != 0 || cfg.HeartbeatInterval < 5*time.Second || cfg.HeartbeatInterval > 300*time.Second {
@@ -589,8 +592,8 @@ func (s *ClientSession) handshake() error {
 	return nil
 }
 
-// watchDrain reads the control stream until the hub drains the session or the
-// stream fails. Any message other than Drain is a protocol violation.
+// watchDrain echoes hub heartbeats until the hub drains or rejects the session
+// or the stream fails. Other messages are protocol violations.
 func (s *ClientSession) watchDrain() error {
 	for {
 		s.ctrl.SetReadDeadline(time.Now().Add(3 * s.heartbeatInterval()))
