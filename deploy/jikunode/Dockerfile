@@ -12,6 +12,7 @@ COPY contract ./contract
 COPY tunnel ./tunnel
 COPY bindcode ./bindcode
 COPY nodeagent ./nodeagent
+COPY upgrade ./upgrade
 ARG VERSION=0.1.0
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \

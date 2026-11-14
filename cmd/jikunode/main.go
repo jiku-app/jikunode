@@ -34,6 +34,7 @@ Usage:
   jikunode status [--port PORT]                    print the loopback status JSON
   jikunode logs [--port PORT] [--n N]              print the last N log lines
   jikunode uninstall [--purge]                    remove the user service and binary
+  jikunode upgrade [--version vX.Y.Z] [--check]    install a signed release
   jikunode version                                 print the version
 
 A node that is not bound makes no network connection at all. Bind it as the
@@ -67,6 +68,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdStatus(args[1:], stdout, stderr)
 	case "logs":
 		return cmdLogs(args[1:], stdout, stderr)
+	case "upgrade":
+		return cmdUpgrade(args[1:], stdout, stderr)
 	case "uninstall":
 		return cmdUninstall(args[1:], stdout, stderr)
 	case "version":
@@ -180,6 +183,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		"node_id", id.NodeID, "bound", nodeagent.IsBound(dir), "status_addr", ln.Addr().String())
 
 	runner := &nodeagent.Runner{
+		Upgrade: autoUpgradeHook(),
 		Dir:     dir,
 		Version: Version,
 		Logger:  logger,

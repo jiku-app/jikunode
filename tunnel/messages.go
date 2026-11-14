@@ -101,6 +101,14 @@ type Drain struct {
 	Reason string `json:"reason"`
 }
 
+type Upgrade struct {
+	Version string `json:"version"`
+}
+type UpgradeStatus struct {
+	Version string `json:"version"`
+	State   string `json:"state"`
+}
+
 // StreamHeader opens one data stream: exactly one framed JSON message
 // followed by raw bytes in both directions.
 type StreamHeader struct {
@@ -112,13 +120,15 @@ type StreamHeader struct {
 // Control is the tagged envelope on the control stream: exactly one field is
 // set. Any other shape is a protocol error and fails the session.
 type Control struct {
-	Hello     *Hello     `json:"hello,omitempty"`
-	Challenge *Challenge `json:"challenge,omitempty"`
-	Proof     *Proof     `json:"proof,omitempty"`
-	Heartbeat *Heartbeat `json:"heartbeat,omitempty"`
-	SetState  *SetState  `json:"set_state,omitempty"`
-	Drain     *Drain     `json:"drain,omitempty"`
-	Reject    *Reject    `json:"reject,omitempty"`
+	Upgrade       *Upgrade       `json:"upgrade,omitempty"`
+	UpgradeStatus *UpgradeStatus `json:"upgrade_status,omitempty"`
+	Hello         *Hello         `json:"hello,omitempty"`
+	Challenge     *Challenge     `json:"challenge,omitempty"`
+	Proof         *Proof         `json:"proof,omitempty"`
+	Heartbeat     *Heartbeat     `json:"heartbeat,omitempty"`
+	SetState      *SetState      `json:"set_state,omitempty"`
+	Drain         *Drain         `json:"drain,omitempty"`
+	Reject        *Reject        `json:"reject,omitempty"`
 }
 
 // Validate enforces the exactly-one-field envelope invariant.
@@ -128,13 +138,26 @@ func (c *Control) Validate() error {
 	}
 	n := 0
 	for _, set := range []bool{c.Hello != nil, c.Challenge != nil, c.Proof != nil,
-		c.Heartbeat != nil, c.SetState != nil, c.Drain != nil, c.Reject != nil} {
+		c.Heartbeat != nil, c.SetState != nil, c.Drain != nil, c.Reject != nil, c.Upgrade != nil, c.UpgradeStatus != nil} {
 		if set {
 			n++
 		}
 	}
 	if n != 1 {
 		return fmt.Errorf("tunnel: control message must carry exactly one payload, got %d", n)
+	}
+	if c.Upgrade != nil && len(c.Upgrade.Version) > 64 {
+		return errors.New("tunnel: upgrade version too long")
+	}
+	if c.UpgradeStatus != nil {
+		if len(c.UpgradeStatus.Version) > 64 {
+			return errors.New("tunnel: upgrade version too long")
+		}
+		switch c.UpgradeStatus.State {
+		case "started", "failed", "unsupported", "declined":
+		default:
+			return errors.New("tunnel: invalid upgrade state")
+		}
 	}
 	return nil
 }

@@ -47,6 +47,8 @@ func cryptoNonce() ([]byte, error) {
 var ErrRejected = errors.New("tunnel: rejected by hub")
 
 // ErrDrained is returned by ClientSession.Run when the hub pushed Drain.
+var ErrUpgraded = errors.New("tunnel: upgrade complete")
+
 var ErrDrained = errors.New("tunnel: drained by hub")
 
 // maxTrackedNonces bounds the replay memory: challenges older than the last
@@ -217,6 +219,7 @@ func (s *ServerSession) SendAck() error {
 
 // ControlHandler configures ServeControl.
 type ControlHandler struct {
+	OnUpgradeStatus func(UpgradeStatus)
 	// HeartbeatTimeout overrides the declared interval's 3x timeout for tests.
 	HeartbeatTimeout time.Duration
 	// OnHeartbeat receives the elapsed time between hub send and node echo.
@@ -299,6 +302,10 @@ func (s *ServerSession) ServeControl(h ControlHandler) error {
 				h.OnHeartbeat(time.Since(when))
 			}
 			deadline = time.Now().Add(h.HeartbeatTimeout)
+		case c.UpgradeStatus != nil:
+			if h.OnUpgradeStatus != nil {
+				h.OnUpgradeStatus(*c.UpgradeStatus)
+			}
 		case c.SetState != nil:
 			if !ValidRunState(c.SetState.State) {
 				return fmt.Errorf("tunnel: invalid run state %q", c.SetState.State)
@@ -422,6 +429,7 @@ func (s *ServerSession) Close() error { return s.ys.Close() }
 
 // ClientConfig configures the node side of a tunnel.
 type ClientConfig struct {
+	OnUpgrade         func(context.Context, string, func(string) error) error
 	NodeID            string
 	Version           string
 	PrivateKey        ed25519.PrivateKey
@@ -525,11 +533,14 @@ func (s *ClientSession) Run(ctx context.Context, ws *websocket.Conn) error {
 	defer cancel()
 
 	drainCh := make(chan error, 1)
-	go func() { drainCh <- s.watchDrain() }()
+	upgradeDone := make(chan error, 1)
+	go func() { drainCh <- s.watchDrain(runCtx, upgradeDone) }()
 	serveCh := make(chan error, 1)
 	go func() { serveCh <- s.serveStreams(runCtx) }()
 
 	select {
+	case err := <-upgradeDone:
+		return err
 	case err := <-drainCh:
 		cancel()
 		_ = ys.Close() // unblocks serveStreams
@@ -594,7 +605,8 @@ func (s *ClientSession) handshake() error {
 
 // watchDrain echoes hub heartbeats until the hub drains or rejects the session
 // or the stream fails. Other messages are protocol violations.
-func (s *ClientSession) watchDrain() error {
+func (s *ClientSession) watchDrain(ctx context.Context, done chan<- error) error {
+	attempted := false
 	for {
 		s.ctrl.SetReadDeadline(time.Now().Add(3 * s.heartbeatInterval()))
 		c, err := ReadControl(s.ctrl)
@@ -605,6 +617,28 @@ func (s *ClientSession) watchDrain() error {
 			if err := s.writeControl(&Control{Heartbeat: &Heartbeat{}}); err != nil {
 				return fmt.Errorf("tunnel: heartbeat echo: %w", err)
 			}
+			continue
+		}
+		if c.Upgrade != nil {
+			version := c.Upgrade.Version
+			status := func(state string) error {
+				return s.writeControl(&Control{UpgradeStatus: &UpgradeStatus{Version: version, State: state}})
+			}
+			if attempted {
+				continue
+			}
+			attempted = true
+			if s.cfg.OnUpgrade == nil {
+				if err := status("unsupported"); err != nil {
+					return err
+				}
+				continue
+			}
+			go func() {
+				if err := s.cfg.OnUpgrade(ctx, version, status); err != nil {
+					done <- err
+				}
+			}()
 			continue
 		}
 		if c.Reject != nil {
@@ -759,4 +793,10 @@ func closeWrite(c net.Conn) {
 		return
 	}
 	_ = c.Close()
+}
+
+func (s *ServerSession) SendUpgrade(version string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return WriteControl(s.ctrl, &Control{Upgrade: &Upgrade{Version: version}})
 }

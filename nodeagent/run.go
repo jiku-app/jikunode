@@ -15,6 +15,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/jiku-app/jikunode/tunnel"
+	"github.com/jiku-app/jikunode/upgrade"
 )
 
 // Connection and backoff constants. The backoff doubles from MinBackoff to
@@ -62,6 +63,8 @@ type Hooks interface {
 // connect: a change to them while a session is live does not affect that
 // session and takes effect at the next reconnect.
 type Runner struct {
+	// Upgrade is nil on deployments without in-place upgrade support.
+	Upgrade           func(context.Context, string) error
 	Dir               string
 	Version           string
 	Policy            *tunnel.DialPolicy
@@ -132,6 +135,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 		started := time.Now()
 		err := r.connect(ctx)
+		if errors.Is(err, tunnel.ErrUpgraded) {
+			return nil
+		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -236,6 +242,7 @@ func (r *Runner) connect(ctx context.Context) error {
 		logger = slog.New(&handshakeReadyHandler{Handler: logger.Handler(), ready: ready})
 	}
 	sess, err := tunnel.NewClientSession(tunnel.ClientConfig{
+		OnUpgrade:         r.upgradeHandler(cfg),
 		NodeID:            cfg.NodeID,
 		Version:           r.Version,
 		PrivateKey:        key,
@@ -455,4 +462,28 @@ func loopbackHost(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// upgradeHandler never exposes the release error or network payload in logs.
+func (r *Runner) upgradeHandler(cfg *Config) func(context.Context, string, func(string) error) error {
+	return func(ctx context.Context, version string, status func(string) error) error {
+		if !upgrade.Newer(version, r.Version) || !cfg.AutoUpgrade {
+			r.logger().Info("upgrade_declined", "event", "upgrade_declined", "node_id", cfg.NodeID)
+			return status("declined")
+		}
+		if r.Upgrade == nil {
+			return status("unsupported")
+		}
+		if err := status("started"); err != nil {
+			return err
+		}
+		if err := r.Upgrade(ctx, version); err != nil {
+			if errors.Is(err, upgrade.ErrUnsupported) {
+				return status("unsupported")
+			}
+			r.logger().Info("upgrade_failed", "event", "upgrade_failed", "node_id", cfg.NodeID)
+			return status("failed")
+		}
+		return tunnel.ErrUpgraded
+	}
 }

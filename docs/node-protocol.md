@@ -45,6 +45,8 @@ shape fails the session:
 | `heartbeat` | hub → node → hub | — | hub sends one each declared interval (`heartbeat_seconds`; CLI 10 s, mobile 60 s); node immediately echoes it; the handshake ack is not echoed. Either side fails after 3 intervals without the peer heartbeat/echo; RTT measures send-to-echo time. Heartbeat timeout follows this declared window. The separate hub presence lease is described below |
 | `set_state` | node → hub | `state`: `running` \| `paused` | node-initiated pause/run; a persistence error fails the session so the node reconnects instead of trusting a lost state change |
 | `reject` | hub → node | `reason`: `unknown_node` \| `revoked_node` | the hub refuses this identity for good; the node treats it as `tunnel.ErrRejected`, forgets its binding and stops reconnecting |
+| `upgrade` | hub → node | `version` (stable vX.Y.Z tag, ≤64 bytes) | sent once after ack when hello.version is older than the target |
+| `upgrade_status` | node → hub | `version` (≤64 bytes), `state`: `started` \| `failed` \| `unsupported` \| `declined` | informational; no free-text failure reason |
 | `drain` | hub → node | `reason` | graceful disconnect (e.g. hub shutdown); the node treats it as `tunnel.ErrDrained` |
 
 ### Handshake
@@ -222,3 +224,38 @@ last lease until expiry and the next sweep. Heartbeat traffic is bounded to
 three pending echoes, but does not negotiate a different storage lease. If
 presence must exactly follow heartbeat cadence, the hub lease implementation
 and this specification must be changed together in a future design.
+
+
+## Upgrades
+
+The hub target defaults to the jikunode module version in its build information.
+Workspace/development builds disable that default. The hub configuration
+`JIKU_NODE_UPGRADE_VERSION` overrides it; an explicitly empty value disables it.
+The hub sends at most one upgrade per authenticated session, only if both
+versions parse as stable vX.Y.Z and the target is strictly newer. Reconnecting
+nodes therefore receive the current target without a separate rollout queue.
+Status logs contain only the node id, event and enumerated state.
+
+The node ignores/declines invalid, equal or older versions. With
+`auto_upgrade=false` it declines; without an upgrade hook it responds
+unsupported and stays connected. Otherwise it sends started and upgrades in
+the background while still echoing heartbeats. Failure sends failed and keeps
+the session. Success exits cleanly for the service manager; the next hello's
+version confirms success. The hub supplies no URL, archive or code.
+
+The fixed GitHub repository, compiled-in ed25519 key, domain-separated signed
+checksums and archive hash authenticate releases independently of the hub.
+Only one regular tar file named jikunode is accepted. The implementation
+limits archives to 64 MiB, checksums to 64 KiB and total time to five minutes,
+permits only HTTPS redirects, smoke-tests the candidate and atomically
+replaces the executable, retaining jikunode.prev.
+
+### Known edge cases
+
+Wire-incompatible nodes and nodes released before upgrade support cannot
+receive an upgrade after a failed handshake; manual reinstall is acceptable
+now, with protocol rollout design deferred. A version smoke test cannot
+detect a later crash loop; jikunode.prev supports manual recovery while
+probation rollback is deferred. A single compiled-in release key cannot
+rotate or recover from compromise automatically; future key rotation design
+must address this, with manual redistribution required now.

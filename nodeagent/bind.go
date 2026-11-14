@@ -57,7 +57,7 @@ func Bind(ctx context.Context, dir, hubURL, code, name, version string, network 
 	if _, err = TunnelURL(hubURL); err != nil {
 		return nil, err
 	}
-	cfg := &Config{Name: name, HubURL: hubURL, NodeID: id.NodeID, KeyPath: id.KeyPath}
+	cfg := &Config{AutoUpgrade: true, Name: name, HubURL: hubURL, NodeID: id.NodeID, KeyPath: id.KeyPath}
 	if err = bindNode(ctx, cfg, key, normalized, version, network); err != nil {
 		return nil, err
 	}

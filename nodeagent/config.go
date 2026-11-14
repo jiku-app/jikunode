@@ -28,10 +28,11 @@ const (
 // Config is the whole on-disk node configuration. It deliberately has no
 // field for a credential, token or proxy URL.
 type Config struct {
-	Name    string `json:"name"`
-	HubURL  string `json:"hub_url"`
-	NodeID  string `json:"node_id"`
-	KeyPath string `json:"key_path"`
+	AutoUpgrade bool   `json:"auto_upgrade"`
+	Name        string `json:"name"`
+	HubURL      string `json:"hub_url"`
+	NodeID      string `json:"node_id"`
+	KeyPath     string `json:"key_path"`
 }
 
 // LoadConfig reads and validates the config file in dir.
@@ -44,7 +45,7 @@ func LoadConfig(dir string) (*Config, error) {
 		}
 		return nil, fmt.Errorf("read config: %w", err)
 	}
-	var cfg Config
+	cfg := Config{AutoUpgrade: true}
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}

@@ -127,3 +127,21 @@ docker compose -f deploy/jikunode/compose.yml exec jikunode jikunode \
 The image is a multi-stage build producing a static binary on
 `distroless/static:nonroot`, with the config on a named volume and the
 container read-only otherwise.
+
+
+## Upgrades
+
+User systemd installs support `jikunode upgrade [--version vX.Y.Z] [--check]`
+and default-on hub-triggered signed upgrades. Set `auto_upgrade` to false in
+config.json to decline hub requests. The user service uses Restart=always.
+System units with ProtectSystem=strict report unsupported; an administrator
+runs `sudo jikunode upgrade`. Docker uses new image tags; Android uses its
+app store. Archives contain only jikunode; download install-user.sh separately.
+
+## Known edge cases
+
+Older or wire-incompatible nodes require manual reinstall because they cannot
+complete the handshake to receive upgrade. A later crash loop needs manual
+recovery using jikunode.prev; probation rollback is deferred. A single release
+key is compiled in, so key rotation or compromise requires manual redistribution.
+These limitations are acceptable during initial development.

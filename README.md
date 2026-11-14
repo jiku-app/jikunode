@@ -18,7 +18,8 @@ files are in [`deploy/jikunode`](deploy/jikunode).
 
 The project currently publishes Linux `amd64` and `arm64` release artifacts.
 The release workflow builds binaries with the tagged version and publishes a
-SHA-256 checksum file.
+SHA-256 checksum file signed with an ed25519 release key. Archives contain only
+the regular file `jikunode`; download `install-user.sh` separately.
 
 ## Bind and run
 
@@ -56,6 +57,7 @@ jikunode resume
 jikunode logs --n 50
 jikunode uninstall              # remove the user service and binary
 jikunode uninstall --purge     # also remove config/key/state/cache
+jikunode upgrade [--version vX.Y.Z] [--check]
 jikunode version
 ```
 
@@ -114,3 +116,43 @@ private hosted-service repository.
 ## License
 
 Apache-2.0. See [`LICENSE`](LICENSE).
+
+
+## Signed upgrades
+
+`jikunode upgrade` selects the latest GitHub release, or use
+`--version vX.Y.Z` for an exact stable release. `--check` reports availability
+without changing files. Only strictly newer stable versions are installed.
+The node downloads from the fixed jiku-app/jikunode release repository,
+verifies the ed25519 signature over `"jikunode-release-v1:" || checksums.txt`,
+then verifies the archive SHA-256 and runs the binary's version smoke test.
+Downloads are bounded (64 MiB archive, 64 KiB checksums, five-minute timeout);
+redirects require HTTPS. The binary is replaced atomically and the old inode
+is kept as `jikunode.prev`. An exclusive lock in
+`$XDG_STATE_HOME/jikunode` (default `~/.local/state/jikunode`) serializes upgrades.
+The CLI restarts an active user systemd service after installation.
+
+After authentication, the hub can request an upgrade using only a version
+tag. The CLI service supports this automatically; set `"auto_upgrade": false`
+in `config.json` to decline (default true, effective on next connection).
+Successful upgrades exit cleanly and `Restart=always` starts the new binary.
+Failures preserve the session. A missing hook or non-writable binary directory
+reports `unsupported`.
+
+| Deployment | Upgrade |
+|---|---|
+| User systemd service in ~/.local/bin | Automatic and CLI |
+| System unit with ProtectSystem=strict | Unsupported automatically; administrator runs sudo jikunode upgrade |
+| Docker | Pull a new image tag |
+| Android | App store |
+
+## Known edge cases
+
+- Wire-incompatible releases, nodes predating upgrade support, and nodes that
+  cannot handshake need a manual reinstall. This is acceptable during initial
+  development; future protocol rollout design can address it.
+- A binary can pass its version check and crash-loop under `Restart=always`.
+  `jikunode.prev` remains available for manual recovery; automatic probation
+  and rollback require a later design.
+- Releases trust a single compiled-in public key. Key rotation or compromise
+  needs manual redistribution for now; a future design can introduce rotation.
