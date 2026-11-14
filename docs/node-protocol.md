@@ -42,6 +42,7 @@ shape fails the session:
 | `proof` | node → hub | `signature` (64 bytes) | ed25519 signature, below |
 | `heartbeat` | hub → node → hub | — | hub sends one each declared interval (`heartbeat_seconds`; CLI 10 s, mobile 60 s); node immediately echoes it; the handshake ack is not echoed. Either side fails after 3 intervals without the peer heartbeat/echo; RTT measures send-to-echo time. The presence lease follows this negotiated window. Dead peers count as present for up to 3 intervals |
 | `set_state` | node → hub | `state`: `running` \| `paused` | node-initiated pause/run; a persistence error fails the session so the node reconnects instead of trusting a lost state change |
+| `reject` | hub → node | `reason`: `unknown_node` \| `revoked_node` | the hub refuses this identity for good; the node treats it as `tunnel.ErrRejected`, forgets its binding and stops reconnecting |
 | `drain` | hub → node | `reason` | graceful disconnect (e.g. hub shutdown); the node treats it as `tunnel.ErrDrained` |
 
 ### Handshake
@@ -193,8 +194,15 @@ lease.
 
 `jikunode run` (once bound) reconnects with jittered exponential backoff from 1 s to 60 s.
 The backoff resets only after a session has stayed up for 60 s, so a flapping
-hub cannot drive a reconnect storm. A node deleted on the hub keeps its local
-marker and retries with backoff until re-bound (documented edge case).
+hub cannot drive a reconnect storm.
+
+A node the hub does not know (never bound, or its data was reset) or has revoked
+gets a `reject` control message (`unknown_node` / `revoked_node`) instead of a
+challenge, and a node revoked mid-session gets the same message before the hub
+closes. The node then deletes its binding and identity (marker, config, node id
+and key), stops dialling, and idles until `jikunode bind` creates a fresh
+identity; a revoked id can never be re-bound. A lookup failure on the hub
+(database trouble) sends no `reject`, so the node just retries with backoff.
 
 ## Hub-side observability and logging
 

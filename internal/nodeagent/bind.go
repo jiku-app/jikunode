@@ -70,6 +70,20 @@ func Bind(ctx context.Context, dir, hubURL, code, name, version string, network 
 	return cfg, nil
 }
 
+// ResetBinding forgets the binding and the node identity (bound marker,
+// config, node id and key) after the hub rejected the node as unknown or
+// revoked. The marker goes first so the runner idles at once; the next bind
+// creates a fresh identity, which a revoked id could never get back.
+func ResetBinding(dir string) error {
+	var firstErr error
+	for _, name := range []string{boundFileName, configFileName, idFileName, keyFileName} {
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 func nodeName(requested string) (string, error) {
 	name := strings.TrimSpace(requested)
 	if name != "" {

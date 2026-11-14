@@ -41,6 +41,11 @@ func cryptoNonce() ([]byte, error) {
 	return buf, nil
 }
 
+// ErrRejected is returned by ClientSession.Run when the hub refused the node's
+// identity (unknown or revoked); reconnecting cannot succeed until the node is
+// bound again.
+var ErrRejected = errors.New("tunnel: rejected by hub")
+
 // ErrDrained is returned by ClientSession.Run when the hub pushed Drain.
 var ErrDrained = errors.New("tunnel: drained by hub")
 
@@ -393,6 +398,13 @@ func (s *ServerSession) OpenStream(ctx context.Context, host string, port int) (
 	return stream, nil
 }
 
+// SendReject tells the node its identity is refused for good (see Reject).
+func (s *ServerSession) SendReject(reason string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return WriteControl(s.ctrl, &Control{Reject: &Reject{Reason: reason}})
+}
+
 // SendDrain pushes Drain to the node.
 func (s *ServerSession) SendDrain(reason string) error {
 	s.mu.Lock()
@@ -553,6 +565,9 @@ func (s *ClientSession) handshake() error {
 	if err != nil {
 		return fmt.Errorf("tunnel: read challenge: %w", err)
 	}
+	if c.Reject != nil {
+		return fmt.Errorf("%w: %s", ErrRejected, c.Reject.Reason)
+	}
 	if c.Challenge == nil || len(c.Challenge.Nonce) != NonceSize {
 		return errors.New("tunnel: expected 32-byte challenge")
 	}
@@ -588,6 +603,9 @@ func (s *ClientSession) watchDrain() error {
 				return fmt.Errorf("tunnel: heartbeat echo: %w", err)
 			}
 			continue
+		}
+		if c.Reject != nil {
+			return fmt.Errorf("%w: %s", ErrRejected, c.Reject.Reason)
 		}
 		if c.Drain == nil {
 			return errors.New("tunnel: unexpected control message")

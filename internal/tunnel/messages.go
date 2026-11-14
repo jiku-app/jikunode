@@ -71,6 +71,22 @@ type Proof struct {
 	Signature []byte `json:"signature"`
 }
 
+// Reject reasons: the hub does not recognise the node, so reconnecting with
+// the same identity can never succeed.
+const (
+	// RejectUnknownNode means the hub has no such node (never bound, or its
+	// data was reset).
+	RejectUnknownNode = "unknown_node"
+	// RejectRevokedNode means the node was revoked by its owner or an admin.
+	RejectRevokedNode = "revoked_node"
+)
+
+// Reject tells the node the hub refuses its identity for good. The node must
+// stop reconnecting and wait for a new bind.
+type Reject struct {
+	Reason string `json:"reason"`
+}
+
 // Heartbeat{} keeps the session lease alive; the hub also uses it as the
 // handshake-success acknowledgement.
 type Heartbeat struct{}
@@ -102,6 +118,7 @@ type Control struct {
 	Heartbeat *Heartbeat `json:"heartbeat,omitempty"`
 	SetState  *SetState  `json:"set_state,omitempty"`
 	Drain     *Drain     `json:"drain,omitempty"`
+	Reject    *Reject    `json:"reject,omitempty"`
 }
 
 // Validate enforces the exactly-one-field envelope invariant.
@@ -111,7 +128,7 @@ func (c *Control) Validate() error {
 	}
 	n := 0
 	for _, set := range []bool{c.Hello != nil, c.Challenge != nil, c.Proof != nil,
-		c.Heartbeat != nil, c.SetState != nil, c.Drain != nil} {
+		c.Heartbeat != nil, c.SetState != nil, c.Drain != nil, c.Reject != nil} {
 		if set {
 			n++
 		}

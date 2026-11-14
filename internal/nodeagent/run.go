@@ -135,6 +135,20 @@ func (r *Runner) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		if errors.Is(err, tunnel.ErrRejected) {
+			// The hub will never accept this identity: stop reconnecting and
+			// idle (waitBound) until `jikunode bind` creates a new one.
+			if rerr := ResetBinding(r.Dir); rerr != nil {
+				return fmt.Errorf("reset binding after hub rejection: %w", rerr)
+			}
+			if r.Hooks != nil {
+				r.Hooks.OnBackoff(err)
+			}
+			r.logger().Error("jikunode: hub rejected this node; run `jikunode bind XXXXX-XXXXX` to bind it again",
+				"event", "rejected", "error", err.Error())
+			attempt = 0
+			continue
+		}
 		if time.Since(started) >= r.stableAfter() {
 			attempt = 0
 		}
