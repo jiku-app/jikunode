@@ -77,11 +77,16 @@ The offline UUID is stored in `node.id` (mode `0600`).
 ```sh
 jikunode run            # connect, serve streams, reconnect with backoff
 jikunode status         # loopback status JSON
-jikunode pause          # tell the hub to pause this node
-jikunode resume         # tell the hub to run this node
+jikunode pause          # ask the hub to pause this node
+jikunode resume         # ask the hub to run this node
 jikunode logs --n 50    # last log lines from the in-memory ring
 jikunode version
 ```
+
+The hub is authoritative for pause/resume: the stored state is pushed to the
+node on every handshake and after every change, so `status.paused` is what the
+hub says, never a local guess. `pause`/`resume` only send the request and wait
+for that push.
 
 Reconnects use jittered exponential backoff from 1 s to 60 s; the backoff
 resets only after a session lasted more than 60 s.
@@ -95,8 +100,8 @@ refuses any other bind address. It serves exactly five routes:
 GET  /                read-only status page (pause/resume buttons)
 GET  /status          status JSON
 GET  /logs?n=N        last N log lines
-POST /control/pause   send SetState(paused) to the hub
-POST /control/resume  send SetState(running) to the hub
+POST /control/pause   ask the hub to pause; it pushes desired_state back
+POST /control/resume  ask the hub to run; it pushes desired_state back
 ```
 
 Requests whose `Host` header is not loopback are refused (`403`, DNS-rebinding

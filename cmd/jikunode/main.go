@@ -61,9 +61,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "run":
 		return cmdRun(args[1:], stdout, stderr)
 	case "pause":
-		return cmdControl(args[1:], contract.StatePaused, stdout, stderr)
+		return cmdControl(args[1:], "pause", contract.StatePaused, stdout, stderr)
 	case "resume":
-		return cmdControl(args[1:], contract.StateRunning, stdout, stderr)
+		return cmdControl(args[1:], "resume", contract.StateRunning, stdout, stderr)
 	case "status":
 		return cmdStatus(args[1:], stdout, stderr)
 	case "logs":
@@ -199,7 +199,9 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 }
 
 // cmdControl implements pause and resume against the loopback status server.
-func cmdControl(args []string, st contract.RunState, stdout, stderr io.Writer) int {
+// action names the route (/control/<action>); st is the state the hub is
+// asked for and the one printed on success.
+func cmdControl(args []string, action string, st contract.RunState, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("jikunode "+string(st), flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	port := fs.Int("port", DefaultStatusPort, "loopback status page port")
@@ -208,7 +210,7 @@ func cmdControl(args []string, st contract.RunState, stdout, stderr io.Writer) i
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := controlNode(ctx, *port, string(st)); err != nil {
+	if err := controlNode(ctx, *port, action); err != nil {
 		fmt.Fprintf(stderr, "jikunode: %v\n", err)
 		return 1
 	}

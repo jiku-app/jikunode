@@ -134,7 +134,7 @@ type StatusOptions struct {
 }
 
 // StatusServer serves the read-only status page, the log tail and the two
-// loopback control endpoints that push pause/run to the hub.
+// loopback control endpoints that request pause/run from the hub.
 type StatusServer struct {
 	nodeID    string
 	version   string
@@ -142,7 +142,12 @@ type StatusServer struct {
 	port      int
 	logs      *LogRing
 	startedAt time.Time
-	paused    atomic.Bool
+	// paused is the hub's authoritative state, never a local guess: it is
+	// written only by OnDesiredState when the hub pushes the state back.
+	paused  atomic.Bool
+	pushes  atomic.Uint64 // increments on every hub state push
+	stateMu sync.Mutex
+	stateCh chan struct{} // closed and replaced on every hub state push
 
 	mu          sync.Mutex
 	bound       bool
@@ -170,6 +175,7 @@ func NewStatusServer(opts StatusOptions) *StatusServer {
 		port:      port,
 		logs:      logs,
 		startedAt: time.Now(),
+		stateCh:   make(chan struct{}),
 	}
 }
 
@@ -186,7 +192,8 @@ func (s *StatusServer) Port() int { return s.port }
 // Logs returns the log ring (shared with the process logger).
 func (s *StatusServer) Logs() *LogRing { return s.logs }
 
-// Paused reports whether the node currently refuses new streams.
+// Paused reports the hub's authoritative state: it is true only after the hub
+// pushed a paused state for this session.
 func (s *StatusServer) Paused() bool { return s.paused.Load() }
 
 // OnUnbound records that the runner is idling until a binding code is entered.
@@ -263,9 +270,10 @@ func (s *StatusServer) Status() statusSnapshot {
 	return snap
 }
 
-// SetState pushes a node-initiated pause/run to the hub through the live
-// session and records the local refusal state on success.
-func (s *StatusServer) SetState(st contract.RunState) error {
+// SetState asks the hub to change this node's run state. The hub is
+// authoritative: the local gate changes only when the hub pushes the state
+// back, so SetState waits for that push instead of recording it locally.
+func (s *StatusServer) SetState(ctx context.Context, st contract.RunState) error {
 	s.mu.Lock()
 	sess, ready := s.session, s.ready
 	s.mu.Unlock()
@@ -277,13 +285,49 @@ func (s *StatusServer) SetState(st contract.RunState) error {
 		case <-ready:
 		case <-time.After(handshakeReadyTimeout):
 			return errors.New("tunnel handshake did not complete")
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
+	// The wait must be satisfied by a push that arrives after this request:
+	// an already-matching local state is not proof that the hub applied it.
+	generation := s.pushes.Load()
 	if err := sess.SendSetState(st); err != nil {
 		return fmt.Errorf("send state to hub: %w", err)
 	}
-	s.paused.Store(st == contract.StatePaused)
+	if err := s.waitState(ctx, st == contract.StatePaused, generation); err != nil {
+		return fmt.Errorf("hub did not apply %s: %w", st, err)
+	}
 	return nil
+}
+
+// OnDesiredState applies the hub's authoritative run state and wakes every
+// control action waiting for it.
+func (s *StatusServer) OnDesiredState(st contract.RunState) {
+	s.paused.Store(st == contract.StatePaused)
+	s.pushes.Add(1)
+	s.stateMu.Lock()
+	close(s.stateCh)
+	s.stateCh = make(chan struct{})
+	s.stateMu.Unlock()
+}
+
+// waitState blocks until a hub push newer than generation leaves the state at
+// want (or ctx ends).
+func (s *StatusServer) waitState(ctx context.Context, want bool, generation uint64) error {
+	for {
+		s.stateMu.Lock()
+		ch := s.stateCh
+		s.stateMu.Unlock()
+		if s.paused.Load() == want && s.pushes.Load() > generation {
+			return nil
+		}
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 // statusRoute is one registered route. The list is the complete surface: no
@@ -469,15 +513,15 @@ func (s *StatusServer) handleLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *StatusServer) handlePause(w http.ResponseWriter, r *http.Request) {
-	s.control(w, contract.StatePaused)
+	s.control(w, r, contract.StatePaused)
 }
 
 func (s *StatusServer) handleResume(w http.ResponseWriter, r *http.Request) {
-	s.control(w, contract.StateRunning)
+	s.control(w, r, contract.StateRunning)
 }
 
-func (s *StatusServer) control(w http.ResponseWriter, st contract.RunState) {
-	if err := s.SetState(st); err != nil {
+func (s *StatusServer) control(w http.ResponseWriter, r *http.Request, st contract.RunState) {
+	if err := s.SetState(r.Context(), st); err != nil {
 		if errors.Is(err, errNotConnected) {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "not_connected"})
 			return

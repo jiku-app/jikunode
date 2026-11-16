@@ -69,4 +69,5 @@ func (hooks) OnBound(*nodeagent.Config)                        {}
 func (hooks) OnConnect(*tunnel.ClientSession, <-chan struct{}) {}
 func (hooks) OnDisconnect(error)                               {}
 func (hooks) OnBackoff(error)                                  {}
+func (hooks) OnDesiredState(contract.RunState)                 {}
 func (hooks) Paused() bool                                     { return false }

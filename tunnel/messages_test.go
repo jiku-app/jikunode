@@ -66,6 +66,20 @@ func TestControlMessageTooLarge_Rejected(t *testing.T) {
 			t.Fatalf("round trip mismatch: %+v", out)
 		}
 	})
+	t.Run("desired state round trips", func(t *testing.T) {
+		var buf bytes.Buffer
+		in := &Control{DesiredState: &DesiredState{State: "paused"}}
+		if err := WriteControl(&buf, in); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		out, err := ReadControl(&buf)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if out.DesiredState == nil || out.DesiredState.State != "paused" || out.SetState != nil {
+			t.Fatalf("round trip mismatch: %+v", out)
+		}
+	})
 }
 
 func TestHelloWireShapeCarriesNoIdentityKeyOrName(t *testing.T) {

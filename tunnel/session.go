@@ -217,6 +217,17 @@ func (s *ServerSession) SendAck() error {
 	return WriteControl(s.ctrl, &Control{Heartbeat: &Heartbeat{}})
 }
 
+// SendDesiredState sends the hub's authoritative run state. It is sent once
+// the session is authenticated and again whenever the stored state changes.
+func (s *ServerSession) SendDesiredState(st contract.RunState) error {
+	if !ValidRunState(st) {
+		return fmt.Errorf("tunnel: invalid run state %q", st)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return WriteControl(s.ctrl, &Control{DesiredState: &DesiredState{State: st}})
+}
+
 // ControlHandler configures ServeControl.
 type ControlHandler struct {
 	OnUpgradeStatus func(UpgradeStatus)
@@ -429,7 +440,10 @@ func (s *ServerSession) Close() error { return s.ys.Close() }
 
 // ClientConfig configures the node side of a tunnel.
 type ClientConfig struct {
-	OnUpgrade         func(context.Context, string, func(string) error) error
+	OnUpgrade func(context.Context, string, func(string) error) error
+	// OnDesiredState receives the hub's authoritative run state (on connect
+	// and whenever it changes). It is the node's only pause/resume source.
+	OnDesiredState    func(contract.RunState)
 	NodeID            string
 	Version           string
 	PrivateKey        ed25519.PrivateKey
@@ -616,6 +630,15 @@ func (s *ClientSession) watchDrain(ctx context.Context, done chan<- error) error
 		if c.Heartbeat != nil {
 			if err := s.writeControl(&Control{Heartbeat: &Heartbeat{}}); err != nil {
 				return fmt.Errorf("tunnel: heartbeat echo: %w", err)
+			}
+			continue
+		}
+		if c.DesiredState != nil {
+			if !ValidRunState(c.DesiredState.State) {
+				return fmt.Errorf("tunnel: invalid run state %q", c.DesiredState.State)
+			}
+			if s.cfg.OnDesiredState != nil {
+				s.cfg.OnDesiredState(c.DesiredState.State)
 			}
 			continue
 		}

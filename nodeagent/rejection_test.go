@@ -17,6 +17,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/hashicorp/yamux"
 	"github.com/jiku-app/jikunode/bindcode"
+	"github.com/jiku-app/jikunode/contract"
 	"github.com/jiku-app/jikunode/tunnel"
 )
 
@@ -180,5 +181,6 @@ func (h *rejectionHooks) OnDisconnect(err error) {
 	default:
 	}
 }
-func (*rejectionHooks) OnBackoff(error) {}
-func (*rejectionHooks) Paused() bool    { return false }
+func (*rejectionHooks) OnBackoff(error)                  {}
+func (*rejectionHooks) OnDesiredState(contract.RunState) {}
+func (*rejectionHooks) Paused() bool                     { return false }

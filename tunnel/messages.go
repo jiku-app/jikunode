@@ -91,8 +91,16 @@ type Reject struct {
 // handshake-success acknowledgement.
 type Heartbeat struct{}
 
-// SetState is a node-initiated pause/run.
+// SetState is a node-initiated pause/run request. The hub decides: it stores
+// the state and pushes the result back as DesiredState.
 type SetState struct {
+	State contract.RunState `json:"state"`
+}
+
+// DesiredState is the hub's authoritative pause/run state for the node. It is
+// sent on connect and whenever the stored state changes; the node applies it
+// as its stream gate and reports it in its status.
+type DesiredState struct {
 	State contract.RunState `json:"state"`
 }
 
@@ -127,6 +135,7 @@ type Control struct {
 	Proof         *Proof         `json:"proof,omitempty"`
 	Heartbeat     *Heartbeat     `json:"heartbeat,omitempty"`
 	SetState      *SetState      `json:"set_state,omitempty"`
+	DesiredState  *DesiredState  `json:"desired_state,omitempty"`
 	Drain         *Drain         `json:"drain,omitempty"`
 	Reject        *Reject        `json:"reject,omitempty"`
 }
@@ -138,7 +147,7 @@ func (c *Control) Validate() error {
 	}
 	n := 0
 	for _, set := range []bool{c.Hello != nil, c.Challenge != nil, c.Proof != nil,
-		c.Heartbeat != nil, c.SetState != nil, c.Drain != nil, c.Reject != nil, c.Upgrade != nil, c.UpgradeStatus != nil} {
+		c.Heartbeat != nil, c.SetState != nil, c.DesiredState != nil, c.Drain != nil, c.Reject != nil, c.Upgrade != nil, c.UpgradeStatus != nil} {
 		if set {
 			n++
 		}

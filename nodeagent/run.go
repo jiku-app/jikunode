@@ -14,6 +14,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/jiku-app/jikunode/contract"
 	"github.com/jiku-app/jikunode/tunnel"
 	"github.com/jiku-app/jikunode/upgrade"
 )
@@ -52,6 +53,9 @@ type Hooks interface {
 	OnConnect(*tunnel.ClientSession, <-chan struct{})
 	OnDisconnect(error)
 	OnBackoff(error)
+	// OnDesiredState receives the hub's authoritative run state: once on
+	// connect and again whenever it changes. Paused() must reflect it.
+	OnDesiredState(contract.RunState)
 	Paused() bool
 }
 
@@ -242,7 +246,12 @@ func (r *Runner) connect(ctx context.Context) error {
 		logger = slog.New(&handshakeReadyHandler{Handler: logger.Handler(), ready: ready})
 	}
 	sess, err := tunnel.NewClientSession(tunnel.ClientConfig{
-		OnUpgrade:         r.upgradeHandler(cfg),
+		OnUpgrade: r.upgradeHandler(cfg),
+		OnDesiredState: func(st contract.RunState) {
+			if r.Hooks != nil {
+				r.Hooks.OnDesiredState(st)
+			}
+		},
 		NodeID:            cfg.NodeID,
 		Version:           r.Version,
 		PrivateKey:        key,

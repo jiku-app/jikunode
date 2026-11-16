@@ -43,7 +43,8 @@ shape fails the session:
 | `challenge` | hub → node | `nonce` (32 bytes, crypto/rand) | issued through a per-hub `NonceLog` that refuses duplicate nonces |
 | `proof` | node → hub | `signature` (64 bytes) | ed25519 signature, below |
 | `heartbeat` | hub → node → hub | — | hub sends one each declared interval (`heartbeat_seconds`; CLI 10 s, mobile 60 s); node immediately echoes it; the handshake ack is not echoed. Either side fails after 3 intervals without the peer heartbeat/echo; RTT measures send-to-echo time. Heartbeat timeout follows this declared window. The separate hub presence lease is described below |
-| `set_state` | node → hub | `state`: `running` \| `paused` | node-initiated pause/run; a persistence error fails the session so the node reconnects instead of trusting a lost state change |
+| `set_state` | node → hub | `state`: `running` \| `paused` | node-initiated pause/run **request**: the hub stores it and pushes the stored value back as `desired_state`; a persistence error fails the session so the node reconnects instead of trusting a lost state change |
+| `desired_state` | hub → node | `state`: `running` \| `paused` | the hub's authoritative run state, sent once after the handshake ack and after every committed change (console toggle or node request). The node's stream gate and `status.paused` come from this message only |
 | `reject` | hub → node | `reason`: `unknown_node` \| `revoked_node` | the hub refuses this identity for good; the node treats it as `tunnel.ErrRejected`, forgets its binding and stops reconnecting |
 | `upgrade` | hub → node | `version` (stable vX.Y.Z tag, ≤64 bytes) | sent once after ack when hello.version is older than the target |
 | `upgrade_status` | node → hub | `version` (≤64 bytes), `state`: `started` \| `failed` \| `unsupported` \| `declined` | informational; no free-text failure reason |
