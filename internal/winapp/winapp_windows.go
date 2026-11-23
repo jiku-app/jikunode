@@ -106,6 +106,45 @@ func RemoveAutostart() (bool, error) {
 	return err == nil, err
 }
 
+// RemoveFromUserPath drops dir from the per-user PATH the installer extended
+// and tells running programs the environment changed.
+func RemoveFromUserPath(dir string) error {
+	k, err := registry.OpenKey(registry.CURRENT_USER, "Environment", registry.QUERY_VALUE|registry.SET_VALUE)
+	if err != nil {
+		return nil
+	}
+	defer k.Close()
+	value, kind, err := k.GetStringValue("Path")
+	if err != nil {
+		return nil
+	}
+	var keep []string
+	for _, entry := range strings.Split(value, ";") {
+		if entry != "" && !strings.EqualFold(filepath.Clean(entry), filepath.Clean(dir)) {
+			keep = append(keep, entry)
+		}
+	}
+	joined := strings.Join(keep, ";")
+	if joined == value {
+		return nil
+	}
+	if kind == registry.EXPAND_SZ {
+		err = k.SetExpandStringValue("Path", joined)
+	} else {
+		err = k.SetStringValue("Path", joined)
+	}
+	if err != nil {
+		return err
+	}
+	env := windows.StringToUTF16Ptr("Environment")
+	const hwndBroadcast, wmSettingChange, smtoAbortIfHung = 0xffff, 0x001A, 0x0002
+	_, _, _ = procSendMessageTimeout.Call(hwndBroadcast, wmSettingChange, 0,
+		uintptr(unsafe.Pointer(env)), smtoAbortIfHung, 2000, 0)
+	return nil
+}
+
+var procSendMessageTimeout = windows.NewLazySystemDLL("user32.dll").NewProc("SendMessageTimeoutW")
+
 // AutostartEnabled reports whether the autostart entry exists.
 func AutostartEnabled() bool {
 	k, err := registry.OpenKey(registry.CURRENT_USER, runKeyPath, registry.QUERY_VALUE)

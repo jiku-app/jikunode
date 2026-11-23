@@ -3,3 +3,5 @@ bin/
 dist/
 /go.work
 /go.work.sum
+/jikunode.exe
+/jikunode-tray.exe

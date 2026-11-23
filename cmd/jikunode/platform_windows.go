@@ -54,8 +54,14 @@ func stopUserService(context.Context) {
 	}
 }
 
-// removeUserService removes the tray app's autostart entry.
-func removeUserService() (bool, error) { return winapp.RemoveAutostart() }
+// removeUserService removes the tray app's autostart entry and the install
+// directory from the user's PATH.
+func removeUserService() (bool, error) {
+	if dir, err := winapp.InstallDir(); err == nil {
+		_ = winapp.RemoveFromUserPath(dir)
+	}
+	return winapp.RemoveAutostart()
+}
 
 // removeInstalledBinary removes the installed programs. Windows cannot delete
 // a running executable (this one), so deletion is handed to a detached,
