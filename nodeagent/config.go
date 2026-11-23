@@ -107,6 +107,10 @@ func CheckPrivateFile(path string) error {
 // LoadPrivateKey reads the raw seed and reconstructs the ed25519 private key.
 // A key file readable by group or others is refused (fail closed).
 func LoadPrivateKey(path string) (ed25519.PrivateKey, error) {
+	return retryTransient(func() (ed25519.PrivateKey, error) { return loadPrivateKey(path) })
+}
+
+func loadPrivateKey(path string) (ed25519.PrivateKey, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, fmt.Errorf("read private key: %w", err)
