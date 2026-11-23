@@ -65,8 +65,8 @@ You need [Go](https://go.dev/dl/) (the version in `go.mod`, or newer) and Git.
 No C compiler is needed: both programs build with `CGO_ENABLED=0`.
 
 ```powershell
-git clone https://github.com/jkevinp/jikunode-windows.git
-cd jikunode-windows
+git clone https://github.com/jiku-app/jikunode.git
+cd jikunode
 .\deploy\windows\build.ps1
 ```
 
@@ -122,35 +122,7 @@ gofmt -l .
 ```
 
 `gofmt -l` lists files that are not formatted; format the ones you changed
-with `gofmt -w <file>`. Two upstream test files in `cmd/jikunode` are listed
-as well; leave them as they are so upstream merges stay clean.
-
-### Updating from the upstream project
-
-This repository is the upstream
-[jiku-app/jikunode](https://github.com/jiku-app/jikunode) code plus the
-Windows support. To bring in upstream changes, merge them, test, rebuild and
-push:
-
-```powershell
-git remote add upstream https://github.com/jiku-app/jikunode.git   # once
-git fetch upstream
-git merge upstream/main
-go test ./...
-.\deploy\windows\build.ps1 -Version <new version>
-git push
-```
-
-The Windows code is mostly in its own files (`*_windows.go`,
-`cmd/jikunode-tray`, `internal/winapp`, `internal/winacl`, `deploy/windows`),
-so conflicts are rare. The likeliest places are the shared files the Windows
-support touches: `cmd/jikunode/uninstall.go`, the platform split in
-`cmd/jikunode/platform_*.go`, `.github/workflows/release.yml` and the READMEs.
-
-Hub-triggered upgrades download releases from the repository and signing key
-set in `upgrade/upgrade.go`, currently the upstream project, which publishes
-no Windows builds. Until it does (or this repository publishes its own signed
-releases), update Windows machines by rebuilding and replacing the programs.
+with `gofmt -w <file>`.
 
 ## The JikuNode window
 
