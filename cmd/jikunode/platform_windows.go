@@ -60,6 +60,9 @@ func removeUserService() (bool, error) {
 	if dir, err := winapp.InstallDir(); err == nil {
 		_ = winapp.RemoveFromUserPath(dir)
 	}
+	if programs, err := winapp.StartMenuDir(); err == nil {
+		_, _ = removeIfExists(filepath.Join(programs, "JikuNode.lnk"))
+	}
 	return winapp.RemoveAutostart()
 }
 

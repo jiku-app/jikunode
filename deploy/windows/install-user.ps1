@@ -103,6 +103,15 @@ try {
   Set-ItemProperty -Path $runKey -Name 'JikuNode' -Value $command
   Write-Host 'JikuNode will start when you sign in to Windows'
 
+  # Start menu entry, to start the tray app again after Quit.
+  $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'JikuNode.lnk'
+  $link = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcut)
+  $link.TargetPath = $trayPath
+  $link.Arguments = ($trayArgs -join ' ')
+  $link.WorkingDirectory = $installDir
+  $link.Description = 'JikuNode supplier egress node'
+  $link.Save()
+
   if (-not $NoStart) {
     if ($trayArgs.Count) { Start-Process -FilePath $trayPath -ArgumentList $trayArgs } else { Start-Process -FilePath $trayPath }
     Write-Host 'JikuNode started; look for its icon in the notification area'

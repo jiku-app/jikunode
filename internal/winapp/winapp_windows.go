@@ -62,6 +62,12 @@ func StateRoot() (string, error) {
 	return localAppData()
 }
 
+// StartMenuDir is the user's Start menu Programs folder, where the installer
+// puts the JikuNode shortcut.
+func StartMenuDir() (string, error) {
+	return windows.KnownFolderPath(windows.FOLDERID_Programs, 0)
+}
+
 // LogDir is where the tray app writes the node's log files.
 func LogDir() (string, error) {
 	root, err := StateRoot()

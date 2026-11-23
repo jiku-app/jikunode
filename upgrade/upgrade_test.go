@@ -14,8 +14,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"runtime"
+	"strings"
 	"testing"
 )
 

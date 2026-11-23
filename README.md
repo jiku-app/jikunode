@@ -14,12 +14,15 @@ for package boundaries, local workspaces and the protocol release workflow.
 Download the archive for your platform from
 [GitHub Releases](https://github.com/jiku-app/jikunode/releases), verify
 `checksums.txt`, and install the `jikunode` binary. Linux systemd deployment
-files are in [`deploy/jikunode`](deploy/jikunode).
+files are in [`deploy/jikunode`](deploy/jikunode); Windows install files are in
+[`deploy/windows`](deploy/windows).
 
-The project currently publishes Linux `amd64` and `arm64` release artifacts.
+The project publishes Linux and Windows `amd64` and `arm64` release artifacts.
 The release workflow builds binaries with the tagged version and publishes a
 SHA-256 checksum file signed with an ed25519 release key. Archives contain only
-the regular file `jikunode`; download `install-user.sh` separately.
+the regular file `jikunode`; download `install-user.sh` separately. Windows
+archives (`jikunode_<version>_windows_<arch>.zip`) contain `jikunode.exe` and
+`jikunode-tray.exe`; download `install-user.ps1` separately.
 
 ## Bind and run
 
@@ -60,6 +63,35 @@ jikunode uninstall --purge     # also remove config/key/state/cache
 jikunode upgrade [--version vX.Y.Z] [--check]
 jikunode version
 ```
+
+## Windows
+
+On Windows the node runs as a per-user startup app: `jikunode-tray.exe` starts
+when you sign in, runs `jikunode.exe run` without a console window, and
+restarts it if it exits (the job systemd does on Linux). No administrator
+rights are needed. Install a verified release from PowerShell:
+
+```powershell
+.\install-user.ps1 .\jikunode_<version>_windows_amd64.zip -Checksums .\checksums.txt
+jikunode bind <code> --name office-pc
+```
+
+The notification-area icon shows whether the node is connected, connecting,
+paused, not bound or stopped. Its menu has Pause/Resume, the local status
+page, the log folder, Restart node, a "Start at login" toggle and Quit. The
+CLI commands above all work in a terminal as well.
+
+| | Windows location |
+|---|---|
+| Programs | `%LOCALAPPDATA%\Programs\jikunode` (added to your PATH) |
+| Config and private key | `%APPDATA%\jikunode` (owner-only access list) |
+| Logs and upgrade lock | `%LOCALAPPDATA%\jikunode` |
+| Autostart | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `JikuNode` |
+
+`XDG_CONFIG_HOME` and `XDG_STATE_HOME` still override the config and state
+roots. If port 16888 is taken, install with `-Port <n>` and pass `--port <n>`
+to `status`, `pause`, `resume` and `logs`. The node only runs while you are
+signed in. See [`deploy/windows`](deploy/windows) for details.
 
 ## Protocol
 
@@ -103,9 +135,11 @@ For the compose setup and binding instructions, see
 go test ./...
 go vet ./...
 go build ./cmd/jikunode
+go build -ldflags -H=windowsgui ./cmd/jikunode-tray   # Windows only
 ```
 
-`uninstall` removes the per-user systemd unit and installed binary. Add
+`uninstall` removes the per-user systemd unit and installed binary (on
+Windows: the tray app's autostart entry, PATH entry and both programs). Add
 `--purge` to remove the node key, config, local state and cache. It does not
 remove the user's shared systemd journal history.
 
@@ -132,6 +166,13 @@ is kept as `jikunode.prev`. An exclusive lock in
 `$XDG_STATE_HOME/jikunode` (default `~/.local/state/jikunode`) serializes upgrades.
 The CLI restarts an active user systemd service after installation.
 
+On Windows the release asset is `jikunode_<version>_windows_<arch>.zip`, with the
+same signature and checksum checks. A running `.exe` cannot be overwritten, so
+each binary is renamed to `*.prev.exe` and the new one moved into place; the
+lock lives in `%LOCALAPPDATA%\jikunode`. The CLI then asks the tray app to
+restart, and the tray app also restarts itself when the node exits after a
+hub-triggered upgrade.
+
 After authentication, the hub can request an upgrade using only a version
 tag. The CLI service supports this automatically; set `"auto_upgrade": false`
 in `config.json` to decline (default true, effective on next connection).
@@ -142,6 +183,7 @@ reports `unsupported`.
 | Deployment | Upgrade |
 |---|---|
 | User systemd service in ~/.local/bin | Automatic and CLI |
+| Windows tray app in %LOCALAPPDATA%\Programs\jikunode | Automatic and CLI |
 | System unit with ProtectSystem=strict | Unsupported automatically; administrator runs sudo jikunode upgrade |
 | Docker | Pull a new image tag |
 | Android | App store |
