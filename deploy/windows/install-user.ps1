@@ -4,9 +4,10 @@
 
 .DESCRIPTION
   Copies jikunode.exe and jikunode-tray.exe to %LOCALAPPDATA%\Programs\jikunode,
-  adds that folder to the user's PATH, registers the tray app to start at logon
-  (HKCU Run key, no administrator rights needed) and starts it. The tray app
-  runs the node without a console window and restarts it when it exits.
+  adds that folder to the user's PATH, registers the JikuNode app to start at
+  sign-in (HKCU Run key, no administrator rights needed) and starts it. The app
+  runs the node without a console window, restarts it when it exits, and has a
+  window (click the tray icon) to start and stop the node and set preferences.
 
   Verify the archive against the signed checksums.txt before installing, or
   pass -Checksums to have this script check the SHA-256 for you.
@@ -23,7 +24,7 @@
   Loopback status port, if the default 16888 is taken on this computer.
 
 .PARAMETER NoStart
-  Install and register autostart, but do not start the tray app now.
+  Install and register autostart, but do not start the app now.
 
 .EXAMPLE
   .\install-user.ps1 .\jikunode_1.4.0_windows_amd64.zip -Checksums .\checksums.txt
@@ -98,7 +99,8 @@ try {
   $trayPath = Join-Path $installDir $trayExe
   $trayArgs = @()
   if ($Port -ne 16888) { $trayArgs = @('--port', "$Port") }
-  $command = ('"' + $trayPath + '" ' + ($trayArgs -join ' ')).Trim()
+  # At sign-in the app starts quietly in the notification area.
+$command = ('"' + $trayPath + '" ' + (($trayArgs + '--background') -join ' ')).Trim()
   New-Item -Path $runKey -Force -ErrorAction SilentlyContinue | Out-Null
   Set-ItemProperty -Path $runKey -Name 'JikuNode' -Value $command
   Write-Host 'JikuNode will start when you sign in to Windows'
@@ -114,7 +116,7 @@ try {
 
   if (-not $NoStart) {
     if ($trayArgs.Count) { Start-Process -FilePath $trayPath -ArgumentList $trayArgs } else { Start-Process -FilePath $trayPath }
-    Write-Host 'JikuNode started; look for its icon in the notification area'
+    Write-Host 'JikuNode started; its window is open, and its icon stays in the notification area'
   }
   $portArg = ''
   if ($Port -ne 16888) { $portArg = " --port $Port" }

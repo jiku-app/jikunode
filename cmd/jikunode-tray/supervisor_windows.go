@@ -36,17 +36,53 @@ type supervisor struct {
 	changed      func() bool
 	onSelfUpdate func()
 
-	mu   sync.Mutex
-	proc *os.Process
-	kick chan struct{} // restart now, skipping the delay
+	mu     sync.Mutex
+	proc   *os.Process
+	wanted bool          // the node should run (Start) or not (Stop)
+	kick   chan struct{} // re-check now, skipping the delay
 }
 
-func newSupervisor(nodePath, logDir string, logger *log.Logger) *supervisor {
+// newSupervisor returns a supervisor that starts the node at once when start
+// is true, and otherwise waits for Start.
+func newSupervisor(nodePath, logDir string, logger *log.Logger, start bool) *supervisor {
 	return &supervisor{
 		nodePath: nodePath,
 		logPath:  filepath.Join(logDir, "node.log"),
 		logger:   logger,
+		wanted:   start,
 		kick:     make(chan struct{}, 1),
+	}
+}
+
+// wantRunning reports whether the node should run (it was not stopped).
+func (s *supervisor) wantRunning() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.wanted
+}
+
+// start starts the node and keeps it running.
+func (s *supervisor) start() {
+	s.mu.Lock()
+	s.wanted = true
+	s.mu.Unlock()
+	s.logger.Printf("node start requested")
+	s.poke()
+}
+
+// stop stops the node and keeps it stopped until start.
+func (s *supervisor) stop() {
+	s.mu.Lock()
+	s.wanted = false
+	s.mu.Unlock()
+	s.logger.Printf("node stop requested")
+	s.kill()
+}
+
+func (s *supervisor) poke() {
+	select {
+	case s.kick <- struct{}{}:
+	default:
 	}
 }
 
@@ -57,12 +93,13 @@ func (s *supervisor) running() bool {
 	return s.proc != nil
 }
 
-// restart stops the node; the loop starts it again at once.
+// restart stops the node; the loop starts it again at once (and starts a
+// stopped node).
 func (s *supervisor) restart() {
-	select {
-	case s.kick <- struct{}{}:
-	default:
-	}
+	s.mu.Lock()
+	s.wanted = true
+	s.mu.Unlock()
+	s.poke()
 	s.kill()
 }
 
@@ -78,6 +115,14 @@ func (s *supervisor) kill() {
 // run supervises the node until ctx is cancelled, then stops it.
 func (s *supervisor) run(ctx context.Context) {
 	for {
+		if !s.wantRunning() {
+			select {
+			case <-ctx.Done():
+				return
+			case <-s.kick:
+				continue
+			}
+		}
 		err := s.once(ctx)
 		if ctx.Err() != nil {
 			return
@@ -91,6 +136,9 @@ func (s *supervisor) run(ctx context.Context) {
 				s.onSelfUpdate()
 			}
 			return
+		}
+		if !s.wantRunning() {
+			continue // stopped from the tray: wait for Start
 		}
 		select {
 		case <-ctx.Done():

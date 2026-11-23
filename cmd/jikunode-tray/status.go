@@ -96,16 +96,21 @@ type view struct {
 }
 
 // describe maps a status poll to the tray view. err is the poll error;
-// nodeUp says whether the supervised node process is alive.
-func describe(st *nodeStatus, err error, nodeUp bool) view {
+// nodeUp says whether the supervised node process is alive and wanted
+// whether it should be (false after Stop).
+func describe(st *nodeStatus, err error, nodeUp, wanted bool) view {
 	switch {
+	case !wanted && nodeUp:
+		return view{icon: iconOff, title: "JikuNode: stopping…"}
+	case !wanted:
+		return view{icon: iconOff, title: "JikuNode: stopped", detail: "Not connected to the hub. Start the node to connect."}
 	case err != nil && nodeUp:
 		return view{icon: iconConnecting, title: "JikuNode: starting…"}
 	case err != nil:
-		return view{icon: iconOff, title: "JikuNode: stopped", detail: "Restarting shortly"}
+		return view{icon: iconOff, title: "JikuNode: not running", detail: "Restarting shortly"}
 	case !st.Bound:
 		return view{icon: iconOff, title: "JikuNode: not bound",
-			detail: "Run: jikunode bind <code>"}
+			detail: "Run: jikunode bind <code> --name <name>"}
 	case !st.Connected:
 		v := view{icon: iconConnecting, title: "JikuNode: connecting…", detail: shortHub(st.HubURL)}
 		if st.LastError != "" {

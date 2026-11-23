@@ -33,6 +33,7 @@ const (
 	trayMutexName    = `Local\JikuNodeTray`
 	quitEventName    = `Local\JikuNodeTrayQuit`
 	restartEventName = `Local\JikuNodeTrayRestart`
+	showEventName    = `Local\JikuNodeTrayShow`
 )
 
 // localAppData returns %LOCALAPPDATA%.
@@ -169,6 +170,7 @@ type Instance struct {
 	mutex   windows.Handle
 	Quit    windows.Handle
 	Restart windows.Handle
+	Show    windows.Handle
 }
 
 // ErrAlreadyRunning is returned by Acquire when another tray app runs.
@@ -176,7 +178,7 @@ var ErrAlreadyRunning = errors.New("jikunode-tray is already running")
 
 // Acquire claims the single-instance mutex, retrying for up to wait (a tray
 // app that restarts itself releases the mutex just before the new one starts),
-// and creates the quit and restart events.
+// and creates the quit, restart and show events.
 func Acquire(wait time.Duration) (*Instance, error) {
 	deadline := time.Now().Add(wait)
 	for {
@@ -184,7 +186,9 @@ func Acquire(wait time.Duration) (*Instance, error) {
 		if err == nil {
 			inst := &Instance{mutex: h}
 			if inst.Quit, err = createEvent(quitEventName); err == nil {
-				inst.Restart, err = createEvent(restartEventName)
+				if inst.Restart, err = createEvent(restartEventName); err == nil {
+					inst.Show, err = createEvent(showEventName)
+				}
 			}
 			if err != nil {
 				inst.Close()
@@ -216,7 +220,7 @@ func createEvent(name string) (windows.Handle, error) {
 
 // Close releases the mutex and events so a successor can start.
 func (i *Instance) Close() {
-	for _, h := range []*windows.Handle{&i.Quit, &i.Restart} {
+	for _, h := range []*windows.Handle{&i.Quit, &i.Restart, &i.Show} {
 		if *h != 0 {
 			_ = windows.CloseHandle(*h)
 			*h = 0
@@ -265,6 +269,10 @@ func RequestQuit(wait time.Duration) bool {
 // RequestRestart asks a running tray app to restart itself and the node from
 // the binaries now on disk. It reports whether a tray app was running.
 func RequestRestart() bool { return signal(restartEventName) }
+
+// RequestShow asks a running tray app to open its window. It reports whether
+// a tray app was running.
+func RequestShow() bool { return signal(showEventName) }
 
 // ---- processes ----------------------------------------------------------------
 

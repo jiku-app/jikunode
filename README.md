@@ -77,9 +77,12 @@ jikunode bind <code> --name office-pc
 ```
 
 The notification-area icon shows whether the node is connected, connecting,
-paused, not bound or stopped. Its menu has Pause/Resume, the local status
-page, the log folder, Restart node, a "Start at login" toggle and Quit. The
-CLI commands above all work in a terminal as well.
+paused, not bound or stopped. Click it (or start JikuNode from the Start menu)
+for the JikuNode window: Start/Stop node, Pause/Resume, the status page and
+logs, and two preferences, "Start JikuNode when I sign in to Windows" and
+"Connect to the hub automatically when JikuNode starts". Right-click it for
+the same actions as a menu. The CLI commands above all work in a terminal as
+well. See [deploy/windows](deploy/windows/README.md) for details.
 
 | | Windows location |
 |---|---|

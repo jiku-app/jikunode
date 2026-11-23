@@ -48,21 +48,24 @@ func TestDescribe(t *testing.T) {
 		st        *nodeStatus
 		err       error
 		up        bool
+		wanted    bool
 		icon      iconState
 		pause     bool
 		resume    bool
 		wantTitle string
 	}{
-		{"starting", nil, down, true, iconConnecting, false, false, "JikuNode: starting…"},
-		{"stopped", nil, down, false, iconOff, false, false, "JikuNode: stopped"},
-		{"unbound", &nodeStatus{}, nil, true, iconOff, false, false, "JikuNode: not bound"},
-		{"connecting", &nodeStatus{Bound: true}, nil, true, iconConnecting, false, false, "JikuNode: connecting…"},
-		{"hub error", &nodeStatus{Bound: true, LastError: "dial failed"}, nil, true, iconError, false, false, "JikuNode: cannot reach hub"},
-		{"paused", &nodeStatus{Bound: true, Connected: true, Paused: true}, nil, true, iconConnecting, false, true, "JikuNode: paused"},
-		{"connected", &nodeStatus{Bound: true, Connected: true}, nil, true, iconConnected, true, false, "JikuNode: connected"},
+		{"starting", nil, down, true, true, iconConnecting, false, false, "JikuNode: starting…"},
+		{"crashed", nil, down, false, true, iconOff, false, false, "JikuNode: not running"},
+		{"stopped", nil, down, false, false, iconOff, false, false, "JikuNode: stopped"},
+		{"stopping", nil, down, true, false, iconOff, false, false, "JikuNode: stopping…"},
+		{"unbound", &nodeStatus{}, nil, true, true, iconOff, false, false, "JikuNode: not bound"},
+		{"connecting", &nodeStatus{Bound: true}, nil, true, true, iconConnecting, false, false, "JikuNode: connecting…"},
+		{"hub error", &nodeStatus{Bound: true, LastError: "dial failed"}, nil, true, true, iconError, false, false, "JikuNode: cannot reach hub"},
+		{"paused", &nodeStatus{Bound: true, Connected: true, Paused: true}, nil, true, true, iconConnecting, false, true, "JikuNode: paused"},
+		{"connected", &nodeStatus{Bound: true, Connected: true}, nil, true, true, iconConnected, true, false, "JikuNode: connected"},
 	}
 	for _, c := range cases {
-		v := describe(c.st, c.err, c.up)
+		v := describe(c.st, c.err, c.up, c.wanted)
 		if v.icon != c.icon || v.canPause != c.pause || v.canResume != c.resume || v.title != c.wantTitle {
 			t.Errorf("%s: got %+v", c.name, v)
 		}
