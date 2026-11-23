@@ -14,7 +14,12 @@ type settings struct {
 	// ConnectOnStart starts the node (and so connects to the hub) when the
 	// tray app starts. When false the tray starts with the node stopped.
 	ConnectOnStart bool `json:"connect_on_start"`
+	// Port is the node's loopback status port; 0 means the default.
+	Port int `json:"port,omitempty"`
 }
+
+// validPort reports whether p can be chosen as the status port.
+func validPort(p int) bool { return p >= 1024 && p <= 65535 }
 
 func defaultSettings() settings { return settings{ConnectOnStart: true} }
 

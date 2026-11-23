@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode"
@@ -35,6 +36,7 @@ var (
 	procIsIconic                      = modUser32.NewProc("IsIconic")
 	procSetForegroundWindow           = modUser32.NewProc("SetForegroundWindow")
 	procSetFocus                      = modUser32.NewProc("SetFocus")
+	procGetFocus                      = modUser32.NewProc("GetFocus")
 	procGetMessageW                   = modUser32.NewProc("GetMessageW")
 	procTranslateMessage              = modUser32.NewProc("TranslateMessage")
 	procDispatchMessageW              = modUser32.NewProc("DispatchMessageW")
@@ -77,6 +79,7 @@ const (
 	wsVScroll      = 0x00200000
 	esMultiline    = 0x0004
 	esUppercase    = 0x0008
+	esNumber       = 0x2000
 	esAutoVScroll  = 0x0040
 	esAutoHScroll  = 0x0080
 	esReadOnly     = 0x0800
@@ -157,6 +160,9 @@ const (
 	idClose
 	idLogLabel
 	idLog
+	idPortLabel
+	idPort
+	idApplyPort
 )
 
 type wndClassEx struct {
@@ -275,6 +281,7 @@ type windowActions struct {
 	setAutostart func(bool)
 	setConnect   func(bool)
 	bind         func(code, name string)
+	setPort      func(int)
 }
 
 // windowState is everything the window shows.
@@ -291,6 +298,7 @@ type windowState struct {
 	bound     bool   // hides the binding code boxes
 	binding   bool   // a bind is in flight
 	log       string // the end of node.log, for the log box
+	port      int    // the node's status port
 }
 
 type windowIcons struct{ status, small, big uintptr }
@@ -401,7 +409,7 @@ func (w *window) s(v int) int { return v * w.dpi / 96 }
 
 // clientWidth and clientHeight are the window's inner size without the
 // binding section, which adds bindHeight and moves what is below it down.
-const clientWidth, clientHeight, bindHeight = 880, 304, 58
+const clientWidth, clientHeight, bindHeight = 880, 342, 58
 
 func (w *window) create(icons map[iconState][]byte) error {
 	w.inst, _, _ = procGetModuleHandleW.Call(0)
@@ -529,10 +537,13 @@ var controls = func() []control {
 		{id: idSection, class: "STATIC", text: "Preferences", style: ssNoPrefix, x: 20, y: 158, w: 400, h: 20, font: fontBold},
 		{id: idAutostart, class: "BUTTON", text: "Start JikuNode when I sign in to Windows", style: bsCheckBox | wsTabStop, x: 20, y: 184, w: 400, h: 24},
 		{id: idConnect, class: "BUTTON", text: "Connect to the hub automatically when JikuNode starts", style: bsCheckBox | wsTabStop, x: 20, y: 210, w: 400, h: 24},
-		{id: idSep2, class: "STATIC", style: ssEtchedHorz, x: 20, y: 246, w: 400, h: 2},
-		{id: idPage, class: "BUTTON", text: "Open status page", style: bsPushButton | wsTabStop, x: 20, y: 260, w: 140, h: 30},
-		{id: idLogs, class: "BUTTON", text: "Open log folder", style: bsPushButton | wsTabStop, x: 168, y: 260, w: 130, h: 30},
-		{id: idClose, class: "BUTTON", text: "Close", style: bsPushButton | wsTabStop, x: 340, y: 260, w: 80, h: 30},
+		{id: idPortLabel, class: "STATIC", text: "Status port", style: ssNoPrefix, x: 20, y: 248, w: 90, h: 20},
+		{id: idPort, class: "EDIT", style: edit | esNumber, exStyle: wsExClientEdge, x: 112, y: 243, w: 80, h: 26},
+		{id: idApplyPort, class: "BUTTON", text: "Apply", style: bsPushButton | wsTabStop, x: 200, y: 242, w: 72, h: 28},
+		{id: idSep2, class: "STATIC", style: ssEtchedHorz, x: 20, y: 284, w: 400, h: 2},
+		{id: idPage, class: "BUTTON", text: "Open status page", style: bsPushButton | wsTabStop, x: 20, y: 298, w: 140, h: 30},
+		{id: idLogs, class: "BUTTON", text: "Open log folder", style: bsPushButton | wsTabStop, x: 168, y: 298, w: 130, h: 30},
+		{id: idClose, class: "BUTTON", text: "Close", style: bsPushButton | wsTabStop, x: 340, y: 298, w: 80, h: 30},
 		// The log box fills the right-hand column.
 		{id: idLogLabel, class: "STATIC", text: "Node log", style: ssNoPrefix, x: 450, y: 16, w: 410, h: 20, font: fontBold},
 		{id: idLog, class: "EDIT", style: wsTabStop | wsVScroll | esMultiline | esReadOnly | esAutoVScroll, exStyle: wsExClientEdge,
@@ -559,6 +570,7 @@ func (w *window) makeControls() {
 	_, _, _ = procSendMessageW.Call(w.ctrls[idCode], emLimitText, 32, 0)
 	_, _, _ = procSendMessageW.Call(w.ctrls[idName], emLimitText, 40, 0)
 	_, _, _ = procSendMessageW.Call(w.ctrls[idLog], emLimitText, 0, 0) // no limit
+	_, _, _ = procSendMessageW.Call(w.ctrls[idPort], emLimitText, 5, 0)
 	_, _, _ = procSendMessageW.Call(w.ctrls[idCode], emSetCueBanner, 1, uintptr(unsafe.Pointer(windows.StringToUTF16Ptr("XXXXX-XXXXX"))))
 	_, _, _ = procSendMessageW.Call(w.ctrls[idName], emSetCueBanner, 1, uintptr(unsafe.Pointer(windows.StringToUTF16Ptr("e.g. office-pc"))))
 }
@@ -672,9 +684,17 @@ func (w *window) command(id int) {
 		} else {
 			go a.setConnect(on)
 		}
+	case idApplyPort:
+		w.applyPort()
 	case idBind, idOK:
-		if id == idOK && !w.bindShown {
-			return
+		if id == idOK {
+			if f, _, _ := procGetFocus.Call(); f == w.ctrls[idPort] {
+				w.applyPort()
+				return
+			}
+			if !w.bindShown {
+				return
+			}
 		}
 		code, name := w.text(idCode), w.text(idName)
 		if code == "" {
@@ -691,6 +711,15 @@ func (w *window) command(id int) {
 	case idClose, idCancel:
 		_, _, _ = procShowWindow.Call(w.hwnd, swHide)
 	}
+}
+
+// applyPort sends the port typed in the window to the app.
+func (w *window) applyPort() {
+	p, err := strconv.Atoi(w.text(idPort))
+	if err != nil {
+		p = 0 // setPort reports it
+	}
+	go w.actions.setPort(p)
 }
 
 func (w *window) present() {
@@ -754,6 +783,9 @@ func (w *window) apply() {
 	w.enable(idPause, (s.view.canPause || s.view.canResume) && !s.busy)
 	w.setCheck(idAutostart, s.autostart)
 	w.setCheck(idConnect, s.connect)
+	if first || s.port != w.shown.port {
+		w.setText(idPort, strconv.Itoa(s.port))
+	}
 	if first || s.bound == w.bindShown {
 		w.layout(!s.bound)
 		if s.bound {

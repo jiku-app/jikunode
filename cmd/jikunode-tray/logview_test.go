@@ -76,7 +76,7 @@ func TestLastLineWriter(t *testing.T) {
 
 func TestFailureView(t *testing.T) {
 	v := failureView("jikunode: listen tcp 127.0.0.1:16888: bind: Only one usage of each socket address (protocol/network address/port) is normally permitted.", 16888)
-	if v.icon != iconError || v.detail != "Port 16888 is used by another program (use --port)" {
+	if v.icon != iconError || v.detail != "Port 16888 is used by another program. Change the port below." {
 		t.Errorf("port in use: %+v", v)
 	}
 	v = failureView(`time=2026-11-23T07:19:33Z level=ERROR msg="jikunode: stopped" event=stopped`, 16888)

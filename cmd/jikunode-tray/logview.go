@@ -146,7 +146,7 @@ func failureView(line string, port int) view {
 	switch {
 	case strings.Contains(line, "Only one usage of each socket address"),
 		strings.Contains(line, "address already in use"):
-		v.detail = fmt.Sprintf("Port %d is used by another program (use --port)", port)
+		v.detail = fmt.Sprintf("Port %d is used by another program. Change the port below.", port)
 	default:
 		v.detail = truncate(line, 70)
 	}

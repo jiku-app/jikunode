@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -49,7 +50,7 @@ const (
 type app struct {
 	inst         *winapp.Instance
 	sup          *supervisor
-	client       *statusClient
+	client       *statusClient // guarded by mu: the port can change
 	logger       *log.Logger
 	logDir       string
 	settingsPath string
@@ -57,7 +58,8 @@ type app struct {
 	portable     bool
 	selfPath     string
 	selfStamp    fileStamp
-	port         int
+	port         int  // guarded by mu
+	portFlag     bool // port came from --port (kept for autostart)
 	background   bool
 	win          *window
 
@@ -83,6 +85,11 @@ func main() {
 	background := fs.Bool("background", false, "start in the notification area without opening the window")
 	if err := fs.Parse(os.Args[1:]); err != nil || fs.NArg() != 0 || *port <= 0 || *port > 65535 {
 		fatal(errors.New("usage: jikunode-tray [--port PORT] [--background]"))
+	}
+	portFlag := false
+	fs.Visit(func(f *flag.Flag) { portFlag = portFlag || f.Name == "port" })
+	if !portFlag {
+		*port = 0 // use the saved port, or the default
 	}
 	enableDPIAwareness()
 	a, err := setup(*port, *background)
@@ -149,10 +156,18 @@ func setup(port int, background bool) (*app, error) {
 		return fail(err)
 	}
 	_, portable := winapp.PortableDataDir()
+	portFlag := port != 0
+	if !portFlag {
+		port = defaultStatusPort
+		if validPort(prefs.Port) {
+			port = prefs.Port
+		}
+	}
 	a := &app{
 		inst:         inst,
 		client:       newStatusClient(port),
 		port:         port,
+		portFlag:     portFlag,
 		background:   background,
 		logger:       logger,
 		logDir:       logDir,
@@ -167,15 +182,13 @@ func setup(port int, background bool) (*app, error) {
 	}
 	a.ctx, a.cancel = context.WithCancel(context.Background())
 	a.sup = newSupervisor(nodePath, logDir, logger, prefs.ConnectOnStart)
-	if port != defaultStatusPort {
-		a.sup.args = []string{"--port", strconv.Itoa(port)}
-	}
+	a.sup.args = nodeArgs(port)
 	a.sup.changed = func() bool { return stampOf(a.selfPath) != a.selfStamp }
 	a.sup.onSelfUpdate = func() {
 		a.restartSelf.Store(true)
 		systray.Quit()
 	}
-	logger.Printf("tray started (pid %d, connect on start %v, portable %v)", os.Getpid(), prefs.ConnectOnStart, portable)
+	logger.Printf("tray started (pid %d, connect on start %v, portable %v, port %d)", os.Getpid(), prefs.ConnectOnStart, portable, port)
 	return a, nil
 }
 
@@ -227,11 +240,12 @@ func (a *app) onReady() {
 		toggleNode:   a.toggleNode,
 		pause:        func() { a.control("pause") },
 		resume:       func() { a.control("resume") },
-		openPage:     func() { openShell(a.client.pageURL()) },
+		openPage:     func() { openShell(a.statusClient().pageURL()) },
 		openLogs:     func() { openShell(a.logDir) },
 		setAutostart: a.setAutostart,
 		setConnect:   a.setConnect,
 		bind:         a.bind,
+		setPort:      a.setPort,
 	}, icons, a.logger)
 	if err != nil {
 		a.logger.Printf("window: %v (the menu still works)", err)
@@ -278,7 +292,7 @@ func (a *app) onReady() {
 				a.logger.Printf("restart requested from menu")
 				a.sup.restart()
 			case <-m.page.ClickedCh:
-				openShell(a.client.pageURL())
+				openShell(a.statusClient().pageURL())
 				continue
 			case <-m.logs.ClickedCh:
 				openShell(a.logDir)
@@ -303,13 +317,13 @@ func (a *app) refresh(m *menu, icons map[iconState][]byte) {
 	err := errors.New("node not running")
 	if wanted || up {
 		pctx, pcancel := context.WithTimeout(a.ctx, 2*time.Second)
-		st, err = a.client.status(pctx)
+		st, err = a.statusClient().status(pctx)
 		pcancel()
 	}
 	v := describe(st, err, up, wanted)
 	if wanted && !up && err != nil {
 		if f := a.sup.lastFailure(); f != "" {
-			v = failureView(f, a.port)
+			v = failureView(f, a.currentPort())
 		}
 	}
 	logText, logErr := readLogTail(a.sup.logPath)
@@ -355,7 +369,7 @@ func (a *app) refresh(m *menu, icons map[iconState][]byte) {
 
 	bound := nodeagent.IsBound(a.configDir) || (st != nil && err == nil && st.Bound)
 	ws := windowState{view: v, wanted: wanted, busy: busy, notice: notice, noticeErr: noticeErr, autostart: autostart, connect: connect,
-		bound: bound, binding: a.binding.Load(), log: logText}
+		bound: bound, binding: a.binding.Load(), log: logText, port: a.currentPort()}
 	if st != nil && err == nil {
 		ws.nodeID, ws.version = st.NodeID, st.Version
 	}
@@ -441,7 +455,7 @@ func (a *app) control(action string) {
 	}()
 	cctx, ccancel := context.WithTimeout(a.ctx, 20*time.Second)
 	defer ccancel()
-	if err := a.client.control(cctx, action); err != nil {
+	if err := a.statusClient().control(cctx, action); err != nil {
 		a.logger.Printf("%s: %v", action, err)
 		a.setError(err.Error())
 		return
@@ -556,10 +570,86 @@ func (a *app) shutdown() {
 
 // args are the tray's own arguments, kept for autostart and self-restart.
 func (a *app) args() []string {
-	if a.port == defaultStatusPort {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.portFlag {
+		return nil // the port is in tray.json
+	}
+	return nodeArgs(a.port)
+}
+
+// nodeArgs are the `jikunode run` arguments for a status port.
+func nodeArgs(port int) []string {
+	if port == defaultStatusPort {
 		return nil
 	}
-	return []string{"--port", strconv.Itoa(a.port)}
+	return []string{"--port", strconv.Itoa(port)}
+}
+
+func (a *app) currentPort() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.port
+}
+
+func (a *app) statusClient() *statusClient {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.client
+}
+
+// setPort moves the node's status server to port: it checks the port is
+// free, saves it in tray.json and restarts the node on it.
+func (a *app) setPort(port int) {
+	defer a.refreshSoon()
+	if !validPort(port) {
+		a.setError("Choose a port from 1024 to 65535")
+		return
+	}
+	current := a.currentPort()
+	if port != current {
+		ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+		if err != nil {
+			a.setError(fmt.Sprintf("Port %d is used by another program; try another", port))
+			return
+		}
+		_ = ln.Close()
+	}
+	a.mu.Lock()
+	next := a.settings
+	next.Port = port
+	if port == defaultStatusPort {
+		next.Port = 0
+	}
+	a.mu.Unlock()
+	if err := saveSettings(a.settingsPath, next); err != nil {
+		a.logger.Printf("save settings: %v", err)
+		a.setError("Could not save the port: " + err.Error())
+		return
+	}
+	a.mu.Lock()
+	a.settings = next
+	a.port, a.portFlag = port, false
+	a.client = newStatusClient(port)
+	a.mu.Unlock()
+	a.logger.Printf("status port set to %d", port)
+	// A Run key written with --port would override the saved port.
+	if winapp.AutostartEnabled() {
+		if err := winapp.SetAutostart(a.selfPath, backgroundFlag); err != nil {
+			a.logger.Printf("update autostart: %v", err)
+		}
+	}
+	if port == current {
+		a.setNotice(fmt.Sprintf("Port %d saved", port))
+		return
+	}
+	a.sup.setArgs(nodeArgs(port))
+	if a.sup.wantRunning() {
+		a.sup.restart()
+		a.setNotice(fmt.Sprintf("Port set to %d. Restarting the node…", port))
+	} else {
+		a.setNotice(fmt.Sprintf("Port set to %d", port))
+	}
 }
 
 func setEnabled(item *systray.MenuItem, on bool) {

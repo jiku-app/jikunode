@@ -90,6 +90,13 @@ func (s *supervisor) poke() {
 	}
 }
 
+// setArgs changes the arguments for the next `jikunode run`.
+func (s *supervisor) setArgs(args []string) {
+	s.mu.Lock()
+	s.args = args
+	s.mu.Unlock()
+}
+
 // lastFailure is the last line printed by a node that exited with an error.
 func (s *supervisor) lastFailure() string {
 	s.mu.Lock()
@@ -167,7 +174,10 @@ func (s *supervisor) once(ctx context.Context) error {
 		return fmt.Errorf("open log: %w", err)
 	}
 	defer logFile.Close()
-	cmd := exec.Command(s.nodePath, append([]string{"run"}, s.args...)...)
+	s.mu.Lock()
+	args := append([]string{"run"}, s.args...)
+	s.mu.Unlock()
+	cmd := exec.Command(s.nodePath, args...)
 	cmd.Dir = filepath.Dir(s.nodePath)
 	tail := &lastLineWriter{}
 	out := io.MultiWriter(logFile, tail)

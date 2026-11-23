@@ -74,9 +74,13 @@ hub, the node id and version, and has:
   JikuNode starts in the notification area without opening the window.
 - **Connect to the hub automatically when JikuNode starts**: when off,
   JikuNode starts with the node stopped and waits for Start. Saved in
-  `%LOCALAPPDATA%\jikunode	ray.json`.
+  `%LOCALAPPDATA%\jikunode\tray.json`.
 - A **Node log** box with the end of the node's log, and the reason in red when
   the node cannot start (for example, another program already uses its port).
+- **Status port**: the loopback port of the node's status page (16888 by
+  default). If another program already uses it, type another port and press
+  **Apply**; JikuNode restarts the node on it and remembers it. `--port` on
+  the command line overrides it until you press Apply.
 - **Binding code** and **Name** boxes with a **Bind** button, shown while the
   node is not bound yet.
 - **Open status page** and **Open log folder**.
