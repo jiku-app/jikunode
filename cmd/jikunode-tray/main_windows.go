@@ -307,6 +307,15 @@ func (a *app) refresh(m *menu, icons map[iconState][]byte) {
 		pcancel()
 	}
 	v := describe(st, err, up, wanted)
+	if wanted && !up && err != nil {
+		if f := a.sup.lastFailure(); f != "" {
+			v = failureView(f, a.port)
+		}
+	}
+	logText, logErr := readLogTail(a.sup.logPath)
+	if logErr != nil && !errors.Is(logErr, os.ErrNotExist) {
+		logText = "Could not read " + a.sup.logPath + ": " + logErr.Error()
+	}
 	busy := a.busy.Load()
 	autostart := winapp.AutostartEnabled()
 	connect := a.connectOnStart()
@@ -346,7 +355,7 @@ func (a *app) refresh(m *menu, icons map[iconState][]byte) {
 
 	bound := nodeagent.IsBound(a.configDir) || (st != nil && err == nil && st.Bound)
 	ws := windowState{view: v, wanted: wanted, busy: busy, notice: notice, noticeErr: noticeErr, autostart: autostart, connect: connect,
-		bound: bound, binding: a.binding.Load()}
+		bound: bound, binding: a.binding.Load(), log: logText}
 	if st != nil && err == nil {
 		ws.nodeID, ws.version = st.NodeID, st.Version
 	}

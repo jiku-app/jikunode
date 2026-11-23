@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -40,6 +41,9 @@ type supervisor struct {
 	proc   *os.Process
 	wanted bool          // the node should run (Start) or not (Stop)
 	kick   chan struct{} // re-check now, skipping the delay
+	// failure is the last line a node printed before it exited with an
+	// error; the window shows it while the node is down.
+	failure string
 }
 
 // newSupervisor returns a supervisor that starts the node at once when start
@@ -84,6 +88,13 @@ func (s *supervisor) poke() {
 	case s.kick <- struct{}{}:
 	default:
 	}
+}
+
+// lastFailure is the last line printed by a node that exited with an error.
+func (s *supervisor) lastFailure() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.failure
 }
 
 // running reports whether the node process is alive.
@@ -158,16 +169,20 @@ func (s *supervisor) once(ctx context.Context) error {
 	defer logFile.Close()
 	cmd := exec.Command(s.nodePath, append([]string{"run"}, s.args...)...)
 	cmd.Dir = filepath.Dir(s.nodePath)
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
+	tail := &lastLineWriter{}
+	out := io.MultiWriter(logFile, tail)
+	cmd.Stdout = out
+	cmd.Stderr = out
 	winapp.HideConsole(cmd)
 	if err := cmd.Start(); err != nil {
+		s.setFailure(err.Error())
 		return fmt.Errorf("start %s: %w", s.nodePath, err)
 	}
 	s.mu.Lock()
 	s.proc = cmd.Process
 	s.mu.Unlock()
 	s.logger.Printf("node started (pid %d)", cmd.Process.Pid)
+	_, _ = io.WriteString(logFile, trayLogLine("INFO", "tray: node started", "pid", cmd.Process.Pid))
 
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
@@ -181,14 +196,28 @@ func (s *supervisor) once(ctx context.Context) error {
 	s.proc = nil
 	s.mu.Unlock()
 	var exit *exec.ExitError
-	if errors.As(err, &exit) {
+	switch {
+	case ctx.Err() != nil:
+	case errors.As(err, &exit):
 		s.logger.Printf("node exited with code %d", exit.ExitCode())
+		if s.wantRunning() {
+			s.setFailure(tail.Last())
+			_, _ = io.WriteString(logFile, trayLogLine("WARN", "tray: node exited; restarting in 5s", "code", exit.ExitCode()))
+		} else {
+			_, _ = io.WriteString(logFile, trayLogLine("INFO", "tray: node stopped"))
+		}
 		return nil
-	}
-	if err == nil {
+	case err == nil:
 		s.logger.Printf("node exited")
+		_, _ = io.WriteString(logFile, trayLogLine("INFO", "tray: node exited"))
 	}
 	return err
+}
+
+func (s *supervisor) setFailure(line string) {
+	s.mu.Lock()
+	s.failure = line
+	s.mu.Unlock()
 }
 
 // openLog appends to path, rotating it first once it exceeds maxLogSize.

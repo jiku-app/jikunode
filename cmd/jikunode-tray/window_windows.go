@@ -74,8 +74,14 @@ const (
 	wsTabStop      = 0x00010000
 	wsExClientEdge = 0x00000200
 
+	wsVScroll      = 0x00200000
+	esMultiline    = 0x0004
 	esUppercase    = 0x0008
+	esAutoVScroll  = 0x0040
 	esAutoHScroll  = 0x0080
+	esReadOnly     = 0x0800
+	emSetSel       = 0x00B1
+	emScrollCaret  = 0x00B7
 	emLimitText    = 0x00C5
 	emSetCueBanner = 0x1501
 
@@ -149,6 +155,8 @@ const (
 	idPage
 	idLogs
 	idClose
+	idLogLabel
+	idLog
 )
 
 type wndClassEx struct {
@@ -280,8 +288,9 @@ type windowState struct {
 	noticeErr bool   // notice is an error: shown in red
 	autostart bool
 	connect   bool
-	bound     bool // hides the binding code boxes
-	binding   bool // a bind is in flight
+	bound     bool   // hides the binding code boxes
+	binding   bool   // a bind is in flight
+	log       string // the end of node.log, for the log box
 }
 
 type windowIcons struct{ status, small, big uintptr }
@@ -299,6 +308,7 @@ type window struct {
 	font      uintptr
 	bold      uintptr
 	large     uintptr
+	mono      uintptr
 	ctrls     map[int]uintptr
 	texts     map[int]string
 	icons     map[iconState]windowIcons
@@ -306,6 +316,7 @@ type window struct {
 	hasShown  bool
 	bindShown bool
 	infoErr   bool // the info line shows an error
+	detailErr bool // the detail line shows an error
 
 	mu      sync.Mutex
 	pending windowState
@@ -390,7 +401,7 @@ func (w *window) s(v int) int { return v * w.dpi / 96 }
 
 // clientWidth and clientHeight are the window's inner size without the
 // binding section, which adds bindHeight and moves what is below it down.
-const clientWidth, clientHeight, bindHeight = 440, 304, 58
+const clientWidth, clientHeight, bindHeight = 880, 304, 58
 
 func (w *window) create(icons map[iconState][]byte) error {
 	w.inst, _, _ = procGetModuleHandleW.Call(0)
@@ -470,6 +481,11 @@ func (w *window) makeFonts() {
 	large := bold
 	large.height = lf.height * 3 / 2
 	w.large = newFont(large)
+	mono := lf
+	mono.faceName = [32]uint16{}
+	copy(mono.faceName[:], windows.StringToUTF16("Consolas"))
+	mono.pitch = 0x31 // FIXED_PITCH | FF_MODERN
+	w.mono = newFont(mono)
 }
 
 // Font choices for controls.
@@ -477,6 +493,7 @@ const (
 	fontNormal = iota
 	fontBold
 	fontLarge
+	fontMono
 )
 
 // control is one child window and where it goes (in 96-DPI pixels, with the
@@ -489,6 +506,7 @@ type control struct {
 	font           int
 	bind           bool // part of the binding section
 	below          bool // moves down while the binding section shows
+	grow           bool // grows taller while the binding section shows
 }
 
 // controls are created in this order, which is also the Tab order.
@@ -515,6 +533,10 @@ var controls = func() []control {
 		{id: idPage, class: "BUTTON", text: "Open status page", style: bsPushButton | wsTabStop, x: 20, y: 260, w: 140, h: 30},
 		{id: idLogs, class: "BUTTON", text: "Open log folder", style: bsPushButton | wsTabStop, x: 168, y: 260, w: 130, h: 30},
 		{id: idClose, class: "BUTTON", text: "Close", style: bsPushButton | wsTabStop, x: 340, y: 260, w: 80, h: 30},
+		// The log box fills the right-hand column.
+		{id: idLogLabel, class: "STATIC", text: "Node log", style: ssNoPrefix, x: 450, y: 16, w: 410, h: 20, font: fontBold},
+		{id: idLog, class: "EDIT", style: wsTabStop | wsVScroll | esMultiline | esReadOnly | esAutoVScroll, exStyle: wsExClientEdge,
+			x: 450, y: 40, w: 410, h: clientHeight - 40 - 14, font: fontMono, grow: true},
 	}
 	for i := range c {
 		c[i].below = !c[i].bind && c[i].y > 90
@@ -523,7 +545,7 @@ var controls = func() []control {
 }()
 
 func (w *window) makeControls() {
-	fonts := map[int]uintptr{fontNormal: w.font, fontBold: w.bold, fontLarge: w.large}
+	fonts := map[int]uintptr{fontNormal: w.font, fontBold: w.bold, fontLarge: w.large, fontMono: w.mono}
 	for _, c := range controls {
 		h, _, _ := procCreateWindowExW.Call(c.exStyle,
 			uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(c.class))),
@@ -536,6 +558,7 @@ func (w *window) makeControls() {
 	}
 	_, _, _ = procSendMessageW.Call(w.ctrls[idCode], emLimitText, 32, 0)
 	_, _, _ = procSendMessageW.Call(w.ctrls[idName], emLimitText, 40, 0)
+	_, _, _ = procSendMessageW.Call(w.ctrls[idLog], emLimitText, 0, 0) // no limit
 	_, _, _ = procSendMessageW.Call(w.ctrls[idCode], emSetCueBanner, 1, uintptr(unsafe.Pointer(windows.StringToUTF16Ptr("XXXXX-XXXXX"))))
 	_, _, _ = procSendMessageW.Call(w.ctrls[idName], emSetCueBanner, 1, uintptr(unsafe.Pointer(windows.StringToUTF16Ptr("e.g. office-pc"))))
 }
@@ -550,11 +573,14 @@ func (w *window) layout(showBind bool) {
 	}
 	for _, c := range controls {
 		h := w.ctrls[c.id]
-		y := c.y
+		y, ht := c.y, c.h
 		if c.below {
 			y += shift
 		}
-		_, _, _ = procSetWindowPos.Call(h, 0, uintptr(w.s(c.x)), uintptr(w.s(y)), uintptr(w.s(c.w)), uintptr(w.s(c.h)), swpNoZOrder|swpNoActivate)
+		if c.grow {
+			ht += shift
+		}
+		_, _, _ = procSetWindowPos.Call(h, 0, uintptr(w.s(c.x)), uintptr(w.s(y)), uintptr(w.s(c.w)), uintptr(w.s(ht)), swpNoZOrder|swpNoActivate)
 		if c.bind {
 			cmd := uintptr(swHide)
 			if showBind {
@@ -584,6 +610,9 @@ func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		case wmCtlColorStatic, wmCtlColorBtn:
 			bg, _, _ := procGetSysColor.Call(colorWindow)
 			fg, _, _ := procGetSysColor.Call(colorWindowText)
+			if lParam == w.ctrls[idDetail] && w.detailErr {
+				fg = errorTextColor
+			}
 			if lParam == w.ctrls[idInfo] {
 				if w.infoErr {
 					fg = errorTextColor
@@ -693,6 +722,10 @@ func (w *window) apply() {
 		_, _, _ = procSendMessageW.Call(w.hwnd, wmSetIcon, 1, ic.big)
 	}
 	w.setText(idTitle, capitalize(strings.TrimPrefix(s.view.title, "JikuNode: ")))
+	if errNow := s.view.icon == iconError; errNow != w.detailErr {
+		w.detailErr = errNow
+		_, _, _ = procInvalidateRect.Call(w.ctrls[idDetail], 0, 1)
+	}
 	w.setText(idDetail, s.view.detail)
 	info := s.notice
 	if info == "" && s.nodeID != "" {
@@ -734,6 +767,13 @@ func (w *window) apply() {
 		w.setText(idBind, "Bind")
 	}
 	w.enable(idBind, !s.binding)
+	if s.log != w.texts[idLog] {
+		w.setText(idLog, s.log)
+		// Show the newest lines.
+		n := uintptr(len(s.log) + 1)
+		_, _, _ = procSendMessageW.Call(w.ctrls[idLog], emSetSel, n, n)
+		_, _, _ = procSendMessageW.Call(w.ctrls[idLog], emScrollCaret, 0, 0)
+	}
 	w.shown = s
 }
 

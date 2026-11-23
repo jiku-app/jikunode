@@ -75,6 +75,8 @@ hub, the node id and version, and has:
 - **Connect to the hub automatically when JikuNode starts**: when off,
   JikuNode starts with the node stopped and waits for Start. Saved in
   `%LOCALAPPDATA%\jikunode	ray.json`.
+- A **Node log** box with the end of the node's log, and the reason in red when
+  the node cannot start (for example, another program already uses its port).
 - **Binding code** and **Name** boxes with a **Bind** button, shown while the
   node is not bound yet.
 - **Open status page** and **Open log folder**.

@@ -85,7 +85,7 @@ data next to the programs (a USB drive, say), extract
 
 The notification-area icon shows whether the node is connected, connecting,
 paused, not bound or stopped. Click it (or start JikuNode from the Start menu)
-for the JikuNode window: binding code entry, Start/Stop node, Pause/Resume,
+for the JikuNode window: binding code entry, the node log, Start/Stop node, Pause/Resume,
 the status page and logs, and two preferences, "Start JikuNode when I sign in to Windows" and
 "Connect to the hub automatically when JikuNode starts". Right-click it for
 the same actions as a menu. The CLI commands above all work in a terminal as
