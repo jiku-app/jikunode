@@ -3,6 +3,7 @@ package nodeagent
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -42,9 +43,14 @@ func TestCreateExclusiveLeavesOnlyTheFinalFile(t *testing.T) {
 	if len(entries) != 1 || entries[0].Name() != "node.key" {
 		t.Fatalf("unexpected directory content: %v", entries)
 	}
-	info, err := os.Stat(path)
-	if err != nil || info.Mode().Perm() != fileMode {
-		t.Fatalf("mode %v err %v", info.Mode().Perm(), err)
+	if err := CheckPrivateFile(path); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().Perm() != fileMode {
+			t.Fatalf("mode %v err %v", info.Mode().Perm(), err)
+		}
 	}
 	// A second create reports the file already existed and keeps its content.
 	created, err = createExclusive(path, []byte("other\n"))

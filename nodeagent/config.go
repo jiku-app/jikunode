@@ -83,7 +83,7 @@ func ensureConfigDir(dir string) error {
 	if err := os.MkdirAll(dir, dirMode); err != nil {
 		return fmt.Errorf("create config directory: %w", err)
 	}
-	if err := os.Chmod(dir, dirMode); err != nil {
+	if err := securePrivateDir(dir); err != nil {
 		return fmt.Errorf("set config directory mode: %w", err)
 	}
 	return nil
@@ -94,6 +94,16 @@ func keyFileBytes(key ed25519.PrivateKey) []byte {
 	return []byte(base64.StdEncoding.EncodeToString(key.Seed()) + "\n")
 }
 
+// CheckPrivateFile reports whether path is private to the current user: mode
+// 0600-style permissions on Unix, an owner-only access list on Windows.
+func CheckPrivateFile(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	return checkPrivateFile(path, info)
+}
+
 // LoadPrivateKey reads the raw seed and reconstructs the ed25519 private key.
 // A key file readable by group or others is refused (fail closed).
 func LoadPrivateKey(path string) (ed25519.PrivateKey, error) {
@@ -101,9 +111,8 @@ func LoadPrivateKey(path string) (ed25519.PrivateKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read private key: %w", err)
 	}
-	if info.Mode().Perm()&0o077 != 0 {
-		return nil, fmt.Errorf("private key %s is accessible by group or others (mode %04o); refusing",
-			path, info.Mode().Perm())
+	if err := checkPrivateFile(path, info); err != nil {
+		return nil, err
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -130,7 +139,7 @@ func writeFileAtomic(path string, data []byte) error {
 		_ = f.Close()
 		_ = os.Remove(tmp)
 	}
-	if err := f.Chmod(fileMode); err != nil {
+	if err := securePrivateFile(f); err != nil {
 		cleanup()
 		return fmt.Errorf("set file mode: %w", err)
 	}

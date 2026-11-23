@@ -5,8 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -14,27 +12,14 @@ import (
 )
 
 func upgradeStateDir() (string, error) {
-	root := os.Getenv("XDG_STATE_HOME")
-	if root == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		root = filepath.Join(home, ".local", "state")
+	root, err := stateRoot()
+	if err != nil {
+		return "", err
 	}
-	return filepath.Join(root, "jikunode"), nil
+	return filepath.Join(root, configDirName), nil
 }
 
 var runUpgrade = upgrade.Upgrade
-var restartUpgradedService = func(ctx context.Context) error {
-	if _, err := exec.LookPath("systemctl"); err != nil {
-		return nil
-	}
-	if err := exec.CommandContext(ctx, "systemctl", "--user", "is-active", "--quiet", userServiceName).Run(); err != nil {
-		return nil
-	}
-	return exec.CommandContext(ctx, "systemctl", "--user", "restart", userServiceName).Run()
-}
 
 func cmdUpgrade(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("jikunode upgrade", flag.ContinueOnError)

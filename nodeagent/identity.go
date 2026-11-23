@@ -204,7 +204,7 @@ func createExclusive(path string, data []byte) (bool, error) {
 	}
 	tmp := f.Name()
 	defer os.Remove(tmp)
-	if err := f.Chmod(fileMode); err != nil {
+	if err := securePrivateFile(f); err != nil {
 		f.Close()
 		return false, fmt.Errorf("set file mode: %w", err)
 	}

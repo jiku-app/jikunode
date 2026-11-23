@@ -7,15 +7,12 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
-const userServiceName = "jikunode.service"
-
-// cmdUninstall removes the per-user systemd unit and the running binary.
+// cmdUninstall removes the per-user service (a systemd unit on Linux, the
+// tray app's autostart entry on Windows) and the installed binaries.
 // --purge additionally removes the node identity and local state/cache. It
 // deliberately does not delete the user's shared systemd journal.
 func cmdUninstall(args []string, stdout, stderr io.Writer) int {
@@ -34,12 +31,7 @@ func cmdUninstall(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 	stopUserService(ctx)
 
-	servicePath, err := userServicePath()
-	if err != nil {
-		fmt.Fprintf(stderr, "jikunode: %v\n", err)
-		return 1
-	}
-	removedService, err := removeIfExists(servicePath)
+	removedService, err := removeUserService()
 	if err != nil {
 		fmt.Fprintf(stderr, "jikunode: remove user service: %v\n", err)
 		return 1
@@ -53,8 +45,8 @@ func cmdUninstall(args []string, stdout, stderr io.Writer) int {
 	// Refuse to remove an arbitrary executable if invoked through an unusual
 	// path (for example `go run` or a renamed program).
 	removedBinary := false
-	if filepath.Base(binaryPath) == "jikunode" {
-		removedBinary, err = removeIfExists(binaryPath)
+	if isBinaryName(filepath.Base(binaryPath)) {
+		removedBinary, err = removeInstalledBinary(binaryPath)
 		if err != nil {
 			fmt.Fprintf(stderr, "jikunode: remove binary: %v\n", err)
 			return 1
@@ -85,54 +77,11 @@ func cmdUninstall(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintln(stdout, "jikunode: user service and binary removed")
 	if *purge {
 		fmt.Fprintln(stdout, "jikunode: node config, key, state and cache purged")
-		fmt.Fprintln(stdout, "jikunode: systemd journal history was not removed")
+		if purgeNote != "" {
+			fmt.Fprintln(stdout, purgeNote)
+		}
 	}
 	return 0
-}
-
-func userServicePath() (string, error) {
-	root, err := configRoot()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(root, "systemd", "user", userServiceName), nil
-}
-
-func configRoot() (string, error) {
-	if xdg := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); xdg != "" {
-		return xdg, nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("locate home directory: %w", err)
-	}
-	return filepath.Join(home, ".config"), nil
-}
-
-func purgePaths() ([]string, error) {
-	config, err := configDir()
-	if err != nil {
-		return nil, err
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("locate home directory: %w", err)
-	}
-	return []string{
-		config,
-		filepath.Join(home, ".local", "state", configDirName),
-		filepath.Join(home, ".cache", configDirName),
-	}, nil
-}
-
-func stopUserService(ctx context.Context) {
-	if _, err := exec.LookPath("systemctl"); err != nil {
-		return
-	}
-	// The unit may not exist or may already be stopped; uninstall is
-	// intentionally idempotent, so these errors are ignored.
-	_ = exec.CommandContext(ctx, "systemctl", "--user", "disable", "--now", userServiceName).Run()
-	_ = exec.CommandContext(ctx, "systemctl", "--user", "daemon-reload").Run()
 }
 
 func removeIfExists(path string) (bool, error) {

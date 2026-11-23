@@ -15,11 +15,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
+	"runtime"
 	"testing"
 )
 
 func TestUpgrade(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a shell-script binary; see TestUpgradeWindows")
+	}
 	for _, scenario := range []string{"success", "signature", "checksum", "missing_signature", "smoke", "traversal", "symlink", "extra", "check", "lock", "readonly", "oversized", "metadata_oversized"} {
 		t.Run(scenario, func(t *testing.T) {
 			pub, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -102,7 +105,7 @@ func TestUpgrade(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer f.Close()
-				if err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+				if err = tryLock(f); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -112,7 +115,7 @@ func TestUpgrade(t *testing.T) {
 				}
 				defer os.Chmod(dir, 0755)
 			}
-			result, err := Upgrade(context.Background(), Options{Version: "v1.2.0", CurrentVersion: "v1.1.0", Executable: exe, StateDir: state, PublicKey: pub, GOARCH: "amd64", BaseURL: server.URL, Client: server.Client(), Check: scenario == "check"})
+			result, err := Upgrade(context.Background(), Options{Version: "v1.2.0", CurrentVersion: "v1.1.0", Executable: exe, StateDir: state, PublicKey: pub, GOOS: "linux", GOARCH: "amd64", BaseURL: server.URL, Client: server.Client(), Check: scenario == "check"})
 			if scenario == "success" || scenario == "check" {
 				if err != nil {
 					t.Fatal(err)
