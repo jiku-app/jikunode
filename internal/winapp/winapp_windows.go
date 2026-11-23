@@ -73,14 +73,20 @@ func LogDir() (string, error) {
 
 // ---- autostart --------------------------------------------------------------
 
-// SetAutostart makes the tray app at trayPath start when the user logs on.
-func SetAutostart(trayPath string) error {
+// SetAutostart makes the tray app at trayPath start, with args, when the user
+// logs on. Arguments must not contain quotes or spaces.
+func SetAutostart(trayPath string, args ...string) error {
+	for _, a := range args {
+		if strings.ContainsAny(a, "\" 	") {
+			return fmt.Errorf("invalid autostart argument %q", a)
+		}
+	}
 	k, _, err := registry.CreateKey(registry.CURRENT_USER, runKeyPath, registry.SET_VALUE)
 	if err != nil {
 		return fmt.Errorf("open autostart key: %w", err)
 	}
 	defer k.Close()
-	return k.SetStringValue(RunValueName, `"`+trayPath+`"`)
+	return k.SetStringValue(RunValueName, strings.TrimSpace(`"`+trayPath+`" `+strings.Join(args, " ")))
 }
 
 // RemoveAutostart deletes the autostart entry and reports whether it existed.
