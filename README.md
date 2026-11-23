@@ -148,6 +148,10 @@ go build ./cmd/jikunode
 go build -ldflags -H=windowsgui ./cmd/jikunode-tray   # Windows only
 ```
 
+To build the Windows programs (both `.exe` files, a portable copy or an
+installable zip) run `.\deploy\windows\build.ps1`; see
+[Build from source](deploy/windows/README.md#build-from-source).
+
 `uninstall` removes the per-user systemd unit and installed binary (on
 Windows: the tray app's autostart entry, PATH entry and both programs). Add
 `--purge` to remove the node key, config, local state and cache. It does not

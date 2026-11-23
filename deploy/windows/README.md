@@ -59,6 +59,99 @@ access lists, so the node key in `data` cannot be limited to your account:
 anyone who has the drive can read it and act as this node. Prefer an
 NTFS-formatted drive, or keep the drive safe.
 
+## Build from source
+
+You need [Go](https://go.dev/dl/) (the version in `go.mod`, or newer) and Git.
+No C compiler is needed: both programs build with `CGO_ENABLED=0`.
+
+```powershell
+git clone https://github.com/jkevinp/jikunode-windows.git
+cd jikunode-windows
+.\deploy\windows\build.ps1
+```
+
+This builds both programs for this computer's architecture into
+`dist\jikunode_dev_windows_amd64\` (`dist` is not tracked by Git). If
+PowerShell refuses to run the script, start it with
+`powershell -ExecutionPolicy Bypass -File .\deploy\windows\build.ps1`.
+
+| Option | Effect |
+|---|---|
+| `-Version 0.6.0` | Stamps the version into `jikunode.exe` (shown by `jikunode version` and the status page) and names the folder `jikunode_0.6.0_windows_<arch>`. Without it the default from `cmd/jikunode/main.go` stays. |
+| `-Arch arm64` | Builds for `amd64` or `arm64` instead of this computer's architecture. |
+| `-Portable` | Adds the `jikunode.portable` marker, making a portable copy (folder name ends in `_portable`). |
+| `-Zip` | Also zips the folder, in the same layout as the release zips. |
+| `-Out <folder>` | Writes somewhere other than `dist`. |
+
+Then either:
+
+- **Run it portable:** build with `-Portable` and start `jikunode-tray.exe`
+  from the output folder.
+- **Install it:** build with `-Zip` and pass the zip to the installer:
+
+  ```powershell
+  .\deploy\windows\build.ps1 -Version 0.6.0 -Zip
+  .\deploy\windows\install-user.ps1 .\dist\jikunode_0.6.0_windows_amd64.zip
+  ```
+
+To replace a copy that is running, quit JikuNode first (right-click the tray
+icon, **Quit JikuNode**) so Windows lets the programs be overwritten. The
+binding, key and preferences are not touched.
+
+The script runs the same `go build` commands as the release workflow. By hand,
+or from Linux or macOS:
+
+```sh
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath \
+  -ldflags "-s -w -X main.Version=0.6.0" -o jikunode.exe ./cmd/jikunode
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath \
+  -ldflags "-s -w -H=windowsgui" -o jikunode-tray.exe ./cmd/jikunode-tray
+```
+
+`-H=windowsgui` matters for the tray app: without it a console window opens
+next to it.
+
+Before pushing, run the tests and checks for every platform the code builds
+for:
+
+```powershell
+go test ./...
+go vet ./...
+$env:GOOS='linux'; go vet ./...; $env:GOOS='darwin'; go vet ./...; Remove-Item env:GOOS
+gofmt -l .
+```
+
+`gofmt -l` lists files that are not formatted; format the ones you changed
+with `gofmt -w <file>`. Two upstream test files in `cmd/jikunode` are listed
+as well; leave them as they are so upstream merges stay clean.
+
+### Updating from the upstream project
+
+This repository is the upstream
+[jiku-app/jikunode](https://github.com/jiku-app/jikunode) code plus the
+Windows support. To bring in upstream changes, merge them, test, rebuild and
+push:
+
+```powershell
+git remote add upstream https://github.com/jiku-app/jikunode.git   # once
+git fetch upstream
+git merge upstream/main
+go test ./...
+.\deploy\windows\build.ps1 -Version <new version>
+git push
+```
+
+The Windows code is mostly in its own files (`*_windows.go`,
+`cmd/jikunode-tray`, `internal/winapp`, `internal/winacl`, `deploy/windows`),
+so conflicts are rare. The likeliest places are the shared files the Windows
+support touches: `cmd/jikunode/uninstall.go`, the platform split in
+`cmd/jikunode/platform_*.go`, `.github/workflows/release.yml` and the READMEs.
+
+Hub-triggered upgrades download releases from the repository and signing key
+set in `upgrade/upgrade.go`, currently the upstream project, which publishes
+no Windows builds. Until it does (or this repository publishes its own signed
+releases), update Windows machines by rebuilding and replacing the programs.
+
 ## The JikuNode window
 
 Click the JikuNode icon in the notification area, or start JikuNode from the
