@@ -26,13 +26,38 @@ app. No administrator rights or Windows service are involved.
    Start menu and starts the app with its window open.
    Options: `-Port <n>` if port 16888 is already used on this computer, and
    `-NoStart` to start at the next sign-in instead of now.
-3. Open a new terminal and bind the node:
+3. Bind the node: in the JikuNode window, type the binding code from the
+   provider console (and a name for this computer, if you like) and press
+   **Bind**. The node starts and the icon turns green once it is connected.
+   From a terminal, `jikunode bind <code> --name office-pc` does the same.
 
-   ```powershell
-   jikunode bind <code> --name office-pc
-   ```
+## Portable copy (no install)
 
-   The tray icon turns green once the node is connected.
+To run JikuNode from a folder you choose, such as a USB drive, without the
+installer:
+
+1. Download `jikunode_<version>_windows_<arch>_portable.zip` (check it
+   against `checksums.txt`) and extract it to that folder.
+2. Start `jikunode-tray.exe` from there, enter the binding code and press
+   **Bind**.
+
+The portable zip holds the two programs and an empty file named
+`jikunode.portable`. That file is what makes the copy portable: the config,
+node key, logs and preferences then live in a `data` folder next to the
+programs, not in your user profile, and the copy is not added to PATH or the
+Start menu. You can turn any copy into a portable one by creating that file
+next to `jikunode.exe`. Moving the folder to another computer moves the node
+identity with it.
+
+"Start JikuNode when I sign in to Windows" still works for a portable copy as
+long as the folder stays at the same path (for a USB drive: the same drive
+letter). To remove a portable copy, quit JikuNode, untick start at sign-in
+first if you turned it on, and delete the folder.
+
+On a drive formatted FAT32 or exFAT (common for USB sticks) Windows keeps no
+access lists, so the node key in `data` cannot be limited to your account:
+anyone who has the drive can read it and act as this node. Prefer an
+NTFS-formatted drive, or keep the drive safe.
 
 ## The JikuNode window
 
@@ -50,6 +75,8 @@ hub, the node id and version, and has:
 - **Connect to the hub automatically when JikuNode starts**: when off,
   JikuNode starts with the node stopped and waits for Start. Saved in
   `%LOCALAPPDATA%\jikunode	ray.json`.
+- **Binding code** and **Name** boxes with a **Bind** button, shown while the
+  node is not bound yet.
 - **Open status page** and **Open log folder**.
 
 Together the two preferences decide what happens when Windows starts: both on
@@ -70,6 +97,9 @@ preferences, and Quit. Quit stops the node and closes JikuNode until you start
 it again from the Start menu or sign in again (if start at sign-in is on).
 
 ## Files
+
+Installed copy (a portable copy keeps all of this in `data\config` and
+`data\state` next to its programs):
 
 | What | Where |
 |---|---|

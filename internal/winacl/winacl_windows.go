@@ -29,7 +29,13 @@ func currentUser() (*windows.SID, error) {
 // RestrictToOwner replaces the DACL of path with a protected one (no inherited
 // entries) that grants full control to the current user and LocalSystem only.
 // For a directory the entries are inherited by everything created inside it.
+//
+// On a volume without access lists (FAT32 or exFAT, as on many USB drives)
+// there is nothing to restrict and it does nothing.
 func RestrictToOwner(path string, dir bool) error {
+	if !PersistentACLs(path) {
+		return nil
+	}
 	user, err := currentUser()
 	if err != nil {
 		return err
@@ -75,8 +81,13 @@ const (
 
 // CheckOwnerOnly returns an error unless every allow entry in the DACL of path
 // grants access to the current user, LocalSystem or Administrators only. A
-// missing (NULL) DACL grants everyone access and is refused.
+// missing (NULL) DACL grants everyone access and is refused. On a volume
+// without access lists (FAT32, exFAT) every file is open to anyone who can
+// reach the drive, so there is nothing to check and it returns nil.
 func CheckOwnerOnly(path string) error {
+	if !PersistentACLs(path) {
+		return nil
+	}
 	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
 		return fmt.Errorf("read access list: %w", err)
@@ -124,4 +135,24 @@ func CheckOwnerOnly(path string) error {
 		}
 	}
 	return nil
+}
+
+// PersistentACLs reports whether the volume that holds path keeps access
+// lists (NTFS and ReFS do; FAT32 and exFAT do not). When it cannot tell it
+// reports true, so the access-list checks still run.
+func PersistentACLs(path string) bool {
+	const filePersistentACLs = 0x00000008
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return true
+	}
+	root := make([]uint16, windows.MAX_LONG_PATH)
+	if err := windows.GetVolumePathName(p, &root[0], uint32(len(root))); err != nil {
+		return true
+	}
+	var flags uint32
+	if err := windows.GetVolumeInformation(&root[0], nil, 0, nil, nil, &flags, nil, 0); err != nil {
+		return true
+	}
+	return flags&filePersistentACLs != 0
 }

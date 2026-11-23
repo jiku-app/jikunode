@@ -95,3 +95,10 @@ func TestNullDACLRefused(t *testing.T) {
 		t.Fatal("NULL DACL was accepted")
 	}
 }
+
+func TestPersistentACLs(t *testing.T) {
+	// The test temp folder is on the system volume, which is NTFS.
+	if !PersistentACLs(t.TempDir()) {
+		t.Fatal("system volume reported without access lists")
+	}
+}

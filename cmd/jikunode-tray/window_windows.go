@@ -43,6 +43,10 @@ var (
 	procSendMessageW                  = modUser32.NewProc("SendMessageW")
 	procPostQuitMessage               = modUser32.NewProc("PostQuitMessage")
 	procSetWindowTextW                = modUser32.NewProc("SetWindowTextW")
+	procGetWindowTextW                = modUser32.NewProc("GetWindowTextW")
+	procGetWindowTextLengthW          = modUser32.NewProc("GetWindowTextLengthW")
+	procSetWindowPos                  = modUser32.NewProc("SetWindowPos")
+	procInvalidateRect                = modUser32.NewProc("InvalidateRect")
 	procEnableWindow                  = modUser32.NewProc("EnableWindow")
 	procLoadCursorW                   = modUser32.NewProc("LoadCursorW")
 	procSystemParametersInfoW         = modUser32.NewProc("SystemParametersInfoW")
@@ -62,12 +66,18 @@ var (
 )
 
 const (
-	wsChild       = 0x40000000
-	wsVisible     = 0x10000000
-	wsCaption     = 0x00C00000
-	wsSysMenu     = 0x00080000
-	wsMinimizeBox = 0x00020000
-	wsTabStop     = 0x00010000
+	wsChild        = 0x40000000
+	wsVisible      = 0x10000000
+	wsCaption      = 0x00C00000
+	wsSysMenu      = 0x00080000
+	wsMinimizeBox  = 0x00020000
+	wsTabStop      = 0x00010000
+	wsExClientEdge = 0x00000200
+
+	esUppercase    = 0x0008
+	esAutoHScroll  = 0x0080
+	emLimitText    = 0x00C5
+	emSetCueBanner = 0x1501
 
 	bsPushButton  = 0x0
 	bsCheckBox    = 0x2
@@ -94,6 +104,7 @@ const (
 
 	swHide       = 0
 	swShowNormal = 1
+	swShow       = 5
 	swRestore    = 9
 
 	colorWindow     = 5
@@ -106,8 +117,16 @@ const (
 	spiGetWorkArea         = 0x0030
 	spiGetNonClientMetrics = 0x0029
 	idcArrow               = 32512
+	idOK                   = 1
 	idCancel               = 2
+
+	swpNoMove     = 0x0002
+	swpNoZOrder   = 0x0004
+	swpNoActivate = 0x0010
 )
+
+// errorTextColor is the red used for errors (a COLORREF: 0x00BBGGRR).
+const errorTextColor = 0x001C2BC4
 
 // Control ids.
 const (
@@ -115,6 +134,11 @@ const (
 	idTitle
 	idDetail
 	idInfo
+	idCodeLabel
+	idNameLabel
+	idCode
+	idName
+	idBind
 	idToggle
 	idPause
 	idSep1
@@ -242,6 +266,7 @@ type windowActions struct {
 	openLogs     func()
 	setAutostart func(bool)
 	setConnect   func(bool)
+	bind         func(code, name string)
 }
 
 // windowState is everything the window shows.
@@ -251,30 +276,36 @@ type windowState struct {
 	busy      bool // a pause or resume is in flight
 	nodeID    string
 	version   string
-	notice    string // a recent error, shown instead of the node line
+	notice    string // a recent result or error, shown instead of the node line
+	noticeErr bool   // notice is an error: shown in red
 	autostart bool
 	connect   bool
+	bound     bool // hides the binding code boxes
+	binding   bool // a bind is in flight
 }
 
 type windowIcons struct{ status, small, big uintptr }
 
 type window struct {
+	title   string
 	actions windowActions
 	logger  *log.Logger
 
 	// Owned by the window thread.
-	hwnd     uintptr
-	inst     uintptr
-	dpi      int
-	brush    uintptr
-	font     uintptr
-	bold     uintptr
-	large    uintptr
-	ctrls    map[int]uintptr
-	texts    map[int]string
-	icons    map[iconState]windowIcons
-	shown    windowState
-	hasShown bool
+	hwnd      uintptr
+	inst      uintptr
+	dpi       int
+	brush     uintptr
+	font      uintptr
+	bold      uintptr
+	large     uintptr
+	ctrls     map[int]uintptr
+	texts     map[int]string
+	icons     map[iconState]windowIcons
+	shown     windowState
+	hasShown  bool
+	bindShown bool
+	infoErr   bool // the info line shows an error
 
 	mu      sync.Mutex
 	pending windowState
@@ -283,9 +314,11 @@ type window struct {
 // theWindow is the one JikuNode window; the window procedure reaches it here.
 var theWindow *window
 
-// newWindow creates the (hidden) JikuNode window on its own thread.
-func newWindow(actions windowActions, icons map[iconState][]byte, logger *log.Logger) (*window, error) {
+// newWindow creates the (hidden) JikuNode window, titled title, on its own
+// thread.
+func newWindow(title string, actions windowActions, icons map[iconState][]byte, logger *log.Logger) (*window, error) {
 	w := &window{
+		title:   title,
 		actions: actions,
 		logger:  logger,
 		ctrls:   map[int]uintptr{},
@@ -355,7 +388,9 @@ func (w *window) loop(icons map[iconState][]byte, ready chan<- error) {
 // s scales a layout value from 96-DPI pixels to the system DPI.
 func (w *window) s(v int) int { return v * w.dpi / 96 }
 
-const clientWidth, clientHeight = 440, 304
+// clientWidth and clientHeight are the window's inner size without the
+// binding section, which adds bindHeight and moves what is below it down.
+const clientWidth, clientHeight, bindHeight = 440, 304, 58
 
 func (w *window) create(icons map[iconState][]byte) error {
 	w.inst, _, _ = procGetModuleHandleW.Call(0)
@@ -403,7 +438,7 @@ func (w *window) create(icons map[iconState][]byte) error {
 
 	theWindow = w
 	hwnd, _, err := procCreateWindowExW.Call(0,
-		uintptr(unsafe.Pointer(className)), uintptr(unsafe.Pointer(windows.StringToUTF16Ptr("JikuNode"))),
+		uintptr(unsafe.Pointer(className)), uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(w.title))),
 		style, uintptr(x), uintptr(y), uintptr(width), uintptr(height), 0, 0, w.inst, 0)
 	if hwnd == 0 {
 		return fmt.Errorf("create window: %w", err)
@@ -411,6 +446,7 @@ func (w *window) create(icons map[iconState][]byte) error {
 	w.hwnd = hwnd
 	w.makeFonts()
 	w.makeControls()
+	w.layout(false)
 	return nil
 }
 
@@ -436,34 +472,109 @@ func (w *window) makeFonts() {
 	w.large = newFont(large)
 }
 
-func (w *window) makeControls() {
-	const text = ssNoPrefix | ssEndEllipsis
-	w.child("STATIC", "", ssIcon, 20, 20, 32, 32, idIcon, w.font)
-	w.child("STATIC", "", text, 64, 16, 356, 28, idTitle, w.large)
-	w.child("STATIC", "", text, 64, 46, 356, 20, idDetail, w.font)
-	w.child("STATIC", "", text, 64, 66, 356, 20, idInfo, w.font)
-	w.child("BUTTON", "Stop node", bsPushButton|wsTabStop, 64, 98, 110, 30, idToggle, w.font)
-	w.child("BUTTON", "Pause", bsPushButton|wsTabStop, 182, 98, 110, 30, idPause, w.font)
-	w.child("STATIC", "", ssEtchedHorz, 20, 146, 400, 2, idSep1, w.font)
-	w.child("STATIC", "Preferences", ssNoPrefix, 20, 158, 400, 20, idSection, w.bold)
-	w.child("BUTTON", "Start JikuNode when I sign in to Windows", bsCheckBox|wsTabStop, 20, 184, 400, 24, idAutostart, w.font)
-	w.child("BUTTON", "Connect to the hub automatically when JikuNode starts", bsCheckBox|wsTabStop, 20, 210, 400, 24, idConnect, w.font)
-	w.child("STATIC", "", ssEtchedHorz, 20, 246, 400, 2, idSep2, w.font)
-	w.child("BUTTON", "Open status page", bsPushButton|wsTabStop, 20, 260, 140, 30, idPage, w.font)
-	w.child("BUTTON", "Open log folder", bsPushButton|wsTabStop, 168, 260, 130, 30, idLogs, w.font)
-	w.child("BUTTON", "Close", bsPushButton|wsTabStop, 340, 260, 80, 30, idClose, w.font)
+// Font choices for controls.
+const (
+	fontNormal = iota
+	fontBold
+	fontLarge
+)
+
+// control is one child window and where it goes (in 96-DPI pixels, with the
+// binding section hidden).
+type control struct {
+	id             int
+	class, text    string
+	style, exStyle uintptr
+	x, y, w, h     int
+	font           int
+	bind           bool // part of the binding section
+	below          bool // moves down while the binding section shows
 }
 
-func (w *window) child(class, text string, style uintptr, x, y, cx, cy, id int, font uintptr) {
-	h, _, _ := procCreateWindowExW.Call(0,
-		uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(class))),
-		uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(text))),
-		wsChild|wsVisible|style,
-		uintptr(w.s(x)), uintptr(w.s(y)), uintptr(w.s(cx)), uintptr(w.s(cy)),
-		w.hwnd, uintptr(id), w.inst, 0)
-	_, _, _ = procSendMessageW.Call(h, wmSetFont, font, 1)
-	w.ctrls[id] = h
-	w.texts[id] = text
+// controls are created in this order, which is also the Tab order.
+var controls = func() []control {
+	const text = ssNoPrefix | ssEndEllipsis
+	const edit = wsTabStop | esAutoHScroll
+	c := []control{
+		{id: idIcon, class: "STATIC", style: ssIcon, x: 20, y: 20, w: 32, h: 32},
+		{id: idTitle, class: "STATIC", style: text, x: 64, y: 16, w: 356, h: 28, font: fontLarge},
+		{id: idDetail, class: "STATIC", style: text, x: 64, y: 46, w: 356, h: 20},
+		{id: idInfo, class: "STATIC", style: text, x: 64, y: 66, w: 356, h: 20},
+		{id: idCodeLabel, class: "STATIC", text: "Binding code", style: ssNoPrefix, x: 64, y: 96, w: 140, h: 18, bind: true},
+		{id: idNameLabel, class: "STATIC", text: "Name (optional)", style: ssNoPrefix, x: 212, y: 96, w: 128, h: 18, bind: true},
+		{id: idCode, class: "EDIT", style: edit | esUppercase, exStyle: wsExClientEdge, x: 64, y: 116, w: 140, h: 26, bind: true},
+		{id: idName, class: "EDIT", style: edit, exStyle: wsExClientEdge, x: 212, y: 116, w: 128, h: 26, bind: true},
+		{id: idBind, class: "BUTTON", text: "Bind", style: bsPushButton | wsTabStop, x: 348, y: 115, w: 72, h: 28, bind: true},
+		{id: idToggle, class: "BUTTON", text: "Stop node", style: bsPushButton | wsTabStop, x: 64, y: 98, w: 110, h: 30},
+		{id: idPause, class: "BUTTON", text: "Pause", style: bsPushButton | wsTabStop, x: 182, y: 98, w: 110, h: 30},
+		{id: idSep1, class: "STATIC", style: ssEtchedHorz, x: 20, y: 146, w: 400, h: 2},
+		{id: idSection, class: "STATIC", text: "Preferences", style: ssNoPrefix, x: 20, y: 158, w: 400, h: 20, font: fontBold},
+		{id: idAutostart, class: "BUTTON", text: "Start JikuNode when I sign in to Windows", style: bsCheckBox | wsTabStop, x: 20, y: 184, w: 400, h: 24},
+		{id: idConnect, class: "BUTTON", text: "Connect to the hub automatically when JikuNode starts", style: bsCheckBox | wsTabStop, x: 20, y: 210, w: 400, h: 24},
+		{id: idSep2, class: "STATIC", style: ssEtchedHorz, x: 20, y: 246, w: 400, h: 2},
+		{id: idPage, class: "BUTTON", text: "Open status page", style: bsPushButton | wsTabStop, x: 20, y: 260, w: 140, h: 30},
+		{id: idLogs, class: "BUTTON", text: "Open log folder", style: bsPushButton | wsTabStop, x: 168, y: 260, w: 130, h: 30},
+		{id: idClose, class: "BUTTON", text: "Close", style: bsPushButton | wsTabStop, x: 340, y: 260, w: 80, h: 30},
+	}
+	for i := range c {
+		c[i].below = !c[i].bind && c[i].y > 90
+	}
+	return c
+}()
+
+func (w *window) makeControls() {
+	fonts := map[int]uintptr{fontNormal: w.font, fontBold: w.bold, fontLarge: w.large}
+	for _, c := range controls {
+		h, _, _ := procCreateWindowExW.Call(c.exStyle,
+			uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(c.class))),
+			uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(c.text))),
+			wsChild|wsVisible|c.style, 0, 0, 0, 0,
+			w.hwnd, uintptr(c.id), w.inst, 0)
+		_, _, _ = procSendMessageW.Call(h, wmSetFont, fonts[c.font], 1)
+		w.ctrls[c.id] = h
+		w.texts[c.id] = c.text
+	}
+	_, _, _ = procSendMessageW.Call(w.ctrls[idCode], emLimitText, 32, 0)
+	_, _, _ = procSendMessageW.Call(w.ctrls[idName], emLimitText, 40, 0)
+	_, _, _ = procSendMessageW.Call(w.ctrls[idCode], emSetCueBanner, 1, uintptr(unsafe.Pointer(windows.StringToUTF16Ptr("XXXXX-XXXXX"))))
+	_, _, _ = procSendMessageW.Call(w.ctrls[idName], emSetCueBanner, 1, uintptr(unsafe.Pointer(windows.StringToUTF16Ptr("e.g. office-pc"))))
+}
+
+// layout places the controls and sizes the window, with or without the
+// binding section.
+func (w *window) layout(showBind bool) {
+	w.bindShown = showBind
+	shift := 0
+	if showBind {
+		shift = bindHeight
+	}
+	for _, c := range controls {
+		h := w.ctrls[c.id]
+		y := c.y
+		if c.below {
+			y += shift
+		}
+		_, _, _ = procSetWindowPos.Call(h, 0, uintptr(w.s(c.x)), uintptr(w.s(y)), uintptr(w.s(c.w)), uintptr(w.s(c.h)), swpNoZOrder|swpNoActivate)
+		if c.bind {
+			cmd := uintptr(swHide)
+			if showBind {
+				cmd = swShow
+			}
+			_, _, _ = procShowWindow.Call(h, cmd)
+		}
+	}
+	const style = wsCaption | wsSysMenu | wsMinimizeBox
+	rc := winRect{right: int32(w.s(clientWidth)), bottom: int32(w.s(clientHeight + shift))}
+	_, _, _ = procAdjustWindowRectEx.Call(uintptr(unsafe.Pointer(&rc)), style, 0, 0)
+	_, _, _ = procSetWindowPos.Call(w.hwnd, 0, 0, 0, uintptr(rc.right-rc.left), uintptr(rc.bottom-rc.top), swpNoMove|swpNoZOrder|swpNoActivate)
+}
+
+// text returns a control's text, trimmed.
+func (w *window) text(id int) string {
+	n, _, _ := procGetWindowTextLengthW.Call(w.ctrls[id])
+	buf := make([]uint16, n+1)
+	_, _, _ = procGetWindowTextW.Call(w.ctrls[id], uintptr(unsafe.Pointer(&buf[0])), n+1)
+	return strings.TrimSpace(windows.UTF16ToString(buf))
 }
 
 func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
@@ -474,7 +585,11 @@ func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 			bg, _, _ := procGetSysColor.Call(colorWindow)
 			fg, _, _ := procGetSysColor.Call(colorWindowText)
 			if lParam == w.ctrls[idInfo] {
-				fg, _, _ = procGetSysColor.Call(colorGrayText)
+				if w.infoErr {
+					fg = errorTextColor
+				} else {
+					fg, _, _ = procGetSysColor.Call(colorGrayText)
+				}
 			}
 			_, _, _ = procSetBkColor.Call(wParam, bg)
 			_, _, _ = procSetTextColor.Call(wParam, fg)
@@ -528,6 +643,18 @@ func (w *window) command(id int) {
 		} else {
 			go a.setConnect(on)
 		}
+	case idBind, idOK:
+		if id == idOK && !w.bindShown {
+			return
+		}
+		code, name := w.text(idCode), w.text(idName)
+		if code == "" {
+			_, _, _ = procSetFocus.Call(w.ctrls[idCode])
+			return
+		}
+		w.enable(idBind, false)
+		w.setText(idBind, "Binding…")
+		go a.bind(code, name)
 	case idPage:
 		go a.openPage()
 	case idLogs:
@@ -544,7 +671,11 @@ func (w *window) present() {
 		_, _, _ = procShowWindow.Call(w.hwnd, swShowNormal)
 	}
 	_, _, _ = procSetForegroundWindow.Call(w.hwnd)
-	_, _, _ = procSetFocus.Call(w.ctrls[idToggle])
+	if w.bindShown {
+		_, _, _ = procSetFocus.Call(w.ctrls[idCode])
+	} else {
+		_, _, _ = procSetFocus.Call(w.ctrls[idToggle])
+	}
 }
 
 // apply shows the pending state, touching only what changed.
@@ -570,6 +701,10 @@ func (w *window) apply() {
 			info += "  ·  version " + s.version
 		}
 	}
+	if errNow := s.notice != "" && s.noticeErr; errNow != w.infoErr {
+		w.infoErr = errNow
+		_, _, _ = procInvalidateRect.Call(w.ctrls[idInfo], 0, 1)
+	}
 	w.setText(idInfo, info)
 
 	if s.wanted {
@@ -586,6 +721,19 @@ func (w *window) apply() {
 	w.enable(idPause, (s.view.canPause || s.view.canResume) && !s.busy)
 	w.setCheck(idAutostart, s.autostart)
 	w.setCheck(idConnect, s.connect)
+	if first || s.bound == w.bindShown {
+		w.layout(!s.bound)
+		if s.bound {
+			w.setText(idCode, "")
+			w.setText(idName, "")
+		}
+	}
+	if s.binding {
+		w.setText(idBind, "Binding…")
+	} else {
+		w.setText(idBind, "Bind")
+	}
+	w.enable(idBind, !s.binding)
 	w.shown = s
 }
 

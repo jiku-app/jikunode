@@ -43,9 +43,15 @@ jobs:
           for arch in amd64 arm64; do
             dir="dist/jikunode_${version}_windows_${arch}"
             mkdir -p "$dir"
-            CGO_ENABLED=0 GOOS=windows GOARCH="$arch" go build               -trimpath               -ldflags "-s -w -X main.Version=$VERSION"               -o "$dir/jikunode.exe" ./cmd/jikunode
-            CGO_ENABLED=0 GOOS=windows GOARCH="$arch" go build               -trimpath               -ldflags "-s -w -H=windowsgui"               -o "$dir/jikunode-tray.exe" ./cmd/jikunode-tray
+            CGO_ENABLED=0 GOOS=windows GOARCH="$arch" go build -trimpath \
+              -ldflags "-s -w -X main.Version=$VERSION" -o "$dir/jikunode.exe" ./cmd/jikunode
+            CGO_ENABLED=0 GOOS=windows GOARCH="$arch" go build -trimpath \
+              -ldflags "-s -w -H=windowsgui" -o "$dir/jikunode-tray.exe" ./cmd/jikunode-tray
             (cd "$dir" && zip -X -q "../jikunode_${version}_windows_${arch}.zip" jikunode.exe jikunode-tray.exe)
+            # Portable copy: the same programs plus the marker file that keeps
+            # config, key and logs in a data folder next to them.
+            : > "$dir/jikunode.portable"
+            (cd "$dir" && zip -X -q "../jikunode_${version}_windows_${arch}_portable.zip" jikunode.exe jikunode-tray.exe jikunode.portable)
             rm -rf "$dir"
           done
           (cd dist && sha256sum *.tar.gz *.zip > checksums.txt)

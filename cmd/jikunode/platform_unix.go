@@ -20,6 +20,12 @@ const (
 	purgeNote = "jikunode: systemd journal history was not removed"
 )
 
+// uninstallNote is printed after a successful uninstall; none on Unix.
+func uninstallNote() string { return "" }
+
+// afterPurge has nothing left to tidy on Unix.
+func afterPurge() {}
+
 // configRoot is $XDG_CONFIG_HOME or ~/.config.
 func configRoot() (string, error) {
 	if xdg := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); xdg != "" {

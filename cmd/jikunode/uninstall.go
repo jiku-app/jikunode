@@ -68,6 +68,7 @@ func cmdUninstall(args []string, stdout, stderr io.Writer) int {
 			}
 			removedData = removedData || removed
 		}
+		afterPurge()
 	}
 
 	if !removedService && !removedBinary && !removedData {
@@ -75,6 +76,9 @@ func cmdUninstall(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	fmt.Fprintln(stdout, "jikunode: user service and binary removed")
+	if note := uninstallNote(); note != "" {
+		fmt.Fprintln(stdout, note)
+	}
 	if *purge {
 		fmt.Fprintln(stdout, "jikunode: node config, key, state and cache purged")
 		if purgeNote != "" {

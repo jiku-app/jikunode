@@ -22,7 +22,9 @@ The release workflow builds binaries with the tagged version and publishes a
 SHA-256 checksum file signed with an ed25519 release key. Archives contain only
 the regular file `jikunode`; download `install-user.sh` separately. Windows
 archives (`jikunode_<version>_windows_<arch>.zip`) contain `jikunode.exe` and
-`jikunode-tray.exe`; download `install-user.ps1` separately.
+`jikunode-tray.exe`; download `install-user.ps1` separately. The
+`_portable.zip` variant adds the `jikunode.portable` marker file and needs no
+installer.
 
 ## Bind and run
 
@@ -73,13 +75,18 @@ rights are needed. Install a verified release from PowerShell:
 
 ```powershell
 .\install-user.ps1 .\jikunode_<version>_windows_amd64.zip -Checksums .\checksums.txt
-jikunode bind <code> --name office-pc
 ```
+
+Then type the binding code into the JikuNode window and press Bind (or run
+`jikunode bind <code> --name office-pc`). For a portable copy that keeps its
+data next to the programs (a USB drive, say), extract
+`jikunode_<version>_windows_<arch>_portable.zip` anywhere and start
+`jikunode-tray.exe`; nothing is installed.
 
 The notification-area icon shows whether the node is connected, connecting,
 paused, not bound or stopped. Click it (or start JikuNode from the Start menu)
-for the JikuNode window: Start/Stop node, Pause/Resume, the status page and
-logs, and two preferences, "Start JikuNode when I sign in to Windows" and
+for the JikuNode window: binding code entry, Start/Stop node, Pause/Resume,
+the status page and logs, and two preferences, "Start JikuNode when I sign in to Windows" and
 "Connect to the hub automatically when JikuNode starts". Right-click it for
 the same actions as a menu. The CLI commands above all work in a terminal as
 well. See [deploy/windows](deploy/windows/README.md) for details.

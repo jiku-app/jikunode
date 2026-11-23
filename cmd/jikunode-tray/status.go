@@ -110,7 +110,7 @@ func describe(st *nodeStatus, err error, nodeUp, wanted bool) view {
 		return view{icon: iconOff, title: "JikuNode: not running", detail: "Restarting shortly"}
 	case !st.Bound:
 		return view{icon: iconOff, title: "JikuNode: not bound",
-			detail: "Run: jikunode bind <code> --name <name>"}
+			detail: "Enter the binding code from the provider console"}
 	case !st.Connected:
 		v := view{icon: iconConnecting, title: "JikuNode: connecting…", detail: shortHub(st.HubURL)}
 		if st.LastError != "" {

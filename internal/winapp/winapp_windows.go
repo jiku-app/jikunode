@@ -54,11 +54,46 @@ func InstallDir() (string, error) {
 	return filepath.Join(root, "Programs", AppDirName), nil
 }
 
+// PortableMarker is the file that, next to jikunode.exe, makes JikuNode
+// portable: config, key, logs and preferences then live in the data folder
+// beside the programs instead of under the user's profile.
+const PortableMarker = "jikunode.portable"
+
+// PortableDataDir returns the data folder of a portable copy (the folder
+// "data" next to the running program) and whether this copy is portable.
+func PortableDataDir() (string, bool) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", false
+	}
+	dir := filepath.Dir(exe)
+	if info, err := os.Stat(filepath.Join(dir, PortableMarker)); err != nil || info.IsDir() {
+		return "", false
+	}
+	return filepath.Join(dir, "data"), true
+}
+
+// ConfigRoot is the root for configuration and the node key:
+// $XDG_CONFIG_HOME when set (for parity with Unix), data\config in a
+// portable copy, otherwise %APPDATA%.
+func ConfigRoot() (string, error) {
+	if xdg := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); xdg != "" {
+		return xdg, nil
+	}
+	if data, ok := PortableDataDir(); ok {
+		return filepath.Join(data, "config"), nil
+	}
+	return os.UserConfigDir()
+}
+
 // StateRoot is the root for local, non-roaming state: $XDG_STATE_HOME when
-// set (for parity with Unix), otherwise %LOCALAPPDATA%.
+// set, data\state in a portable copy, otherwise %LOCALAPPDATA%.
 func StateRoot() (string, error) {
 	if xdg := strings.TrimSpace(os.Getenv("XDG_STATE_HOME")); xdg != "" {
 		return xdg, nil
+	}
+	if data, ok := PortableDataDir(); ok {
+		return filepath.Join(data, "state"), nil
 	}
 	return localAppData()
 }

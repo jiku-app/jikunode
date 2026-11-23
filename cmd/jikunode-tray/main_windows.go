@@ -11,6 +11,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -22,6 +23,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -30,6 +32,7 @@ import (
 	"golang.org/x/sys/windows"
 
 	"github.com/jiku-app/jikunode/internal/winapp"
+	"github.com/jiku-app/jikunode/nodeagent"
 	"github.com/jiku-app/jikunode/upgrade"
 )
 
@@ -50,6 +53,8 @@ type app struct {
 	logger       *log.Logger
 	logDir       string
 	settingsPath string
+	configDir    string // the node's config folder, to tell whether it is bound
+	portable     bool
 	selfPath     string
 	selfStamp    fileStamp
 	port         int
@@ -59,8 +64,10 @@ type app struct {
 	mu        sync.Mutex
 	settings  settings
 	notice    string
+	noticeErr bool
 	noticeAt  time.Time
 	busy      atomic.Bool // a pause or resume is in flight
+	binding   atomic.Bool // a bind is in flight
 	refreshCh chan struct{}
 
 	// restartSelf makes shutdown start a fresh tray from the binary on disk.
@@ -137,6 +144,11 @@ func setup(port int, background bool) (*app, error) {
 	if err != nil {
 		logger.Printf("settings: %v (using defaults)", err)
 	}
+	configRoot, err := winapp.ConfigRoot()
+	if err != nil {
+		return fail(err)
+	}
+	_, portable := winapp.PortableDataDir()
 	a := &app{
 		inst:         inst,
 		client:       newStatusClient(port),
@@ -145,6 +157,8 @@ func setup(port int, background bool) (*app, error) {
 		logger:       logger,
 		logDir:       logDir,
 		settingsPath: settingsPath,
+		configDir:    filepath.Join(configRoot, winapp.AppDirName),
+		portable:     portable,
 		settings:     prefs,
 		selfPath:     self,
 		selfStamp:    stampOf(self),
@@ -161,7 +175,7 @@ func setup(port int, background bool) (*app, error) {
 		a.restartSelf.Store(true)
 		systray.Quit()
 	}
-	logger.Printf("tray started (pid %d, connect on start %v)", os.Getpid(), prefs.ConnectOnStart)
+	logger.Printf("tray started (pid %d, connect on start %v, portable %v)", os.Getpid(), prefs.ConnectOnStart, portable)
 	return a, nil
 }
 
@@ -205,7 +219,11 @@ func (a *app) onReady() {
 	systray.AddSeparator()
 	m.quit = systray.AddMenuItem("Quit JikuNode", "Stop the node and close JikuNode")
 
-	win, err := newWindow(windowActions{
+	title := "JikuNode"
+	if a.portable {
+		title = "JikuNode (portable)"
+	}
+	win, err := newWindow(title, windowActions{
 		toggleNode:   a.toggleNode,
 		pause:        func() { a.control("pause") },
 		resume:       func() { a.control("resume") },
@@ -213,6 +231,7 @@ func (a *app) onReady() {
 		openLogs:     func() { openShell(a.logDir) },
 		setAutostart: a.setAutostart,
 		setConnect:   a.setConnect,
+		bind:         a.bind,
 	}, icons, a.logger)
 	if err != nil {
 		a.logger.Printf("window: %v (the menu still works)", err)
@@ -291,7 +310,7 @@ func (a *app) refresh(m *menu, icons map[iconState][]byte) {
 	busy := a.busy.Load()
 	autostart := winapp.AutostartEnabled()
 	connect := a.connectOnStart()
-	notice := a.currentNotice()
+	notice, noticeErr := a.currentNotice()
 
 	systray.SetIcon(icons[v.icon])
 	systray.SetTooltip(v.title)
@@ -325,7 +344,9 @@ func (a *app) refresh(m *menu, icons map[iconState][]byte) {
 	setChecked(m.autostart, autostart)
 	setChecked(m.connect, connect)
 
-	ws := windowState{view: v, wanted: wanted, busy: busy, notice: notice, autostart: autostart, connect: connect}
+	bound := nodeagent.IsBound(a.configDir) || (st != nil && err == nil && st.Bound)
+	ws := windowState{view: v, wanted: wanted, busy: busy, notice: notice, noticeErr: noticeErr, autostart: autostart, connect: connect,
+		bound: bound, binding: a.binding.Load()}
 	if st != nil && err == nil {
 		ws.nodeID, ws.version = st.NodeID, st.Version
 	}
@@ -337,6 +358,58 @@ func (a *app) refreshSoon() {
 	case a.refreshCh <- struct{}{}:
 	default:
 	}
+}
+
+// bind runs `jikunode bind` with the code and name typed in the window and
+// starts the node, which then connects to the hub.
+func (a *app) bind(code, name string) {
+	a.binding.Store(true)
+	a.refreshSoon()
+	defer func() {
+		a.binding.Store(false)
+		a.refreshSoon()
+	}()
+	args := []string{"bind", code}
+	if name != "" {
+		args = append(args, "--name", name)
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, a.sup.nodePath, args...)
+	cmd.Dir = filepath.Dir(a.sup.nodePath)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	winapp.HideConsole(cmd)
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimPrefix(lastLine(stderr.String()), "jikunode: ")
+		if msg == "" {
+			msg = err.Error()
+		}
+		a.logger.Printf("bind failed: %s", msg) // the code itself is not logged
+		a.setError("Bind failed: " + msg)
+		return
+	}
+	a.logger.Printf("bind: %s", firstLine(stdout.String()))
+	a.setNotice("Bound. Connecting to the hub…")
+	if !a.sup.wantRunning() {
+		a.sup.start()
+	}
+}
+
+func firstLine(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
+}
+
+func lastLine(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.LastIndexByte(s, '\n'); i >= 0 {
+		s = s[i+1:]
+	}
+	return strings.TrimSpace(s)
 }
 
 // toggleNode stops a running node or starts a stopped one.
@@ -361,7 +434,7 @@ func (a *app) control(action string) {
 	defer ccancel()
 	if err := a.client.control(cctx, action); err != nil {
 		a.logger.Printf("%s: %v", action, err)
-		a.setNotice(err.Error())
+		a.setError(err.Error())
 		return
 	}
 	a.setNotice("")
@@ -372,13 +445,13 @@ func (a *app) setAutostart(on bool) {
 	if !on {
 		if _, err := winapp.RemoveAutostart(); err != nil {
 			a.logger.Printf("disable autostart: %v", err)
-			a.setNotice("Could not turn off start at sign-in: " + err.Error())
+			a.setError("Could not turn off start at sign-in: " + err.Error())
 		}
 		return
 	}
 	if err := winapp.SetAutostart(a.selfPath, append(a.args(), backgroundFlag)...); err != nil {
 		a.logger.Printf("enable autostart: %v", err)
-		a.setNotice("Could not turn on start at sign-in: " + err.Error())
+		a.setError("Could not turn on start at sign-in: " + err.Error())
 	}
 }
 
@@ -390,7 +463,7 @@ func (a *app) setConnect(on bool) {
 	a.mu.Unlock()
 	if err := saveSettings(a.settingsPath, next); err != nil {
 		a.logger.Printf("save settings: %v", err)
-		a.setNotice("Could not save the setting: " + err.Error())
+		a.setError("Could not save the setting: " + err.Error())
 		return
 	}
 	a.mu.Lock()
@@ -405,19 +478,23 @@ func (a *app) connectOnStart() bool {
 	return a.settings.ConnectOnStart
 }
 
-func (a *app) setNotice(s string) {
+// setNotice shows s (a result) for a while; setError shows an error.
+func (a *app) setNotice(s string) { a.note(s, false) }
+func (a *app) setError(s string)  { a.note(s, true) }
+
+func (a *app) note(s string, isErr bool) {
 	a.mu.Lock()
-	a.notice, a.noticeAt = truncate(s, 90), time.Now()
+	a.notice, a.noticeErr, a.noticeAt = truncate(s, 120), isErr, time.Now()
 	a.mu.Unlock()
 }
 
-func (a *app) currentNotice() string {
+func (a *app) currentNotice() (string, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if time.Since(a.noticeAt) > noticeFor {
 		a.notice = ""
 	}
-	return a.notice
+	return a.notice, a.noticeErr
 }
 
 // watchEvents reacts to `jikunode uninstall` (quit), `jikunode upgrade`

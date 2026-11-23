@@ -20,15 +20,12 @@ const (
 	purgeNote = ""
 )
 
-// configRoot is $XDG_CONFIG_HOME or %APPDATA% (roaming).
-func configRoot() (string, error) {
-	if xdg := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); xdg != "" {
-		return xdg, nil
-	}
-	return os.UserConfigDir()
-}
+// configRoot is $XDG_CONFIG_HOME, data\config in a portable copy, or
+// %APPDATA% (roaming).
+func configRoot() (string, error) { return winapp.ConfigRoot() }
 
-// stateRoot is $XDG_STATE_HOME or %LOCALAPPDATA%.
+// stateRoot is $XDG_STATE_HOME, data\state in a portable copy, or
+// %LOCALAPPDATA%.
 func stateRoot() (string, error) { return winapp.StateRoot() }
 
 // purgePaths are the config directory (key, config) and the local directory
@@ -51,6 +48,11 @@ func stopUserService(context.Context) {
 	winapp.RequestQuit(10 * time.Second)
 	if dir, err := winapp.InstallDir(); err == nil {
 		winapp.KillProgramsIn(dir, winapp.NodeExe, winapp.TrayExe)
+	}
+	if _, portable := winapp.PortableDataDir(); portable {
+		if exe, err := os.Executable(); err == nil {
+			winapp.KillProgramsIn(filepath.Dir(exe), winapp.NodeExe, winapp.TrayExe)
+		}
 	}
 }
 
@@ -91,6 +93,23 @@ func removeInstalledBinary(path string) (bool, error) {
 	}
 	_ = cmd.Process.Release()
 	return true, nil
+}
+
+// afterPurge removes a portable copy's data folders once they are empty.
+func afterPurge() {
+	if data, portable := winapp.PortableDataDir(); portable {
+		for _, dir := range []string{filepath.Join(data, "config"), filepath.Join(data, "state"), data} {
+			_ = os.Remove(dir) // fails, harmlessly, unless empty
+		}
+	}
+}
+
+// uninstallNote tells the user of a portable copy that its programs stay.
+func uninstallNote() string {
+	if _, portable := winapp.PortableDataDir(); portable {
+		return "jikunode: this is a portable copy; delete its folder to remove the programs"
+	}
+	return ""
 }
 
 // restartUpgradedService asks the tray app to restart itself and the node
