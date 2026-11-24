@@ -67,8 +67,9 @@ change is implemented and tested here, including an update to
 
 The tag is the release version: `.github/workflows/release.yml` injects it via
 `-ldflags "-X main.Version=<tag>"`. A pushed `v*.*.*` tag immediately publishes
-Linux amd64/arm64 archives (one regular jikunode binary), checksums
-signed checksums and a GitHub release (the user installer is a separate asset). The dependent container job builds
+Linux amd64/arm64 archives (one regular jikunode binary), Windows amd64/arm64
+zips (`jikunode.exe` and `jikunode-tray.exe`, plus a `_portable` variant with
+the `jikunode.portable` marker; see `deploy/windows`), signed checksums and a GitHub release (the user installer is a separate asset). The dependent container job builds
 `deploy/jikunode/Dockerfile` and publishes GHCR tag and `latest` images. Release
 only from `main`; the workflow does not enforce branch ancestry. Never publish
 node releases from the hub repository.

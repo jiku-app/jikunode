@@ -146,7 +146,7 @@ func loadOrCreateNodeID(path string) (string, error) {
 }
 
 func readNodeID(path string) (string, error) {
-	data, err := os.ReadFile(path)
+	data, err := retryTransient(func() ([]byte, error) { return os.ReadFile(path) })
 	if err != nil {
 		return "", err
 	}
@@ -163,6 +163,23 @@ const lockStale = 30 * time.Second
 
 // lockTimeout bounds how long a process waits for another creator.
 const lockTimeout = 10 * time.Second
+
+// transientWait bounds how long a file operation is retried while it fails
+// with a transientFileError.
+const transientWait = 2 * time.Second
+
+// retryTransient runs op until it succeeds, fails for good, or keeps failing
+// with a transient error for transientWait.
+func retryTransient[T any](op func() (T, error)) (T, error) {
+	deadline := time.Now().Add(transientWait)
+	for {
+		v, err := op()
+		if err == nil || !transientFileError(err) || time.Now().After(deadline) {
+			return v, err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
 
 // createExclusive installs data at path only if path does not exist yet and
 // reports whether this call created the file. Creation is serialised with a
@@ -181,7 +198,10 @@ func createExclusive(path string, data []byte) (bool, error) {
 		if err == nil {
 			break
 		}
-		if !errors.Is(err, os.ErrExist) {
+		// On Windows a lock directory that another creator is still
+		// removing cannot be created again for a moment: wait as for a held
+		// lock.
+		if !errors.Is(err, os.ErrExist) && !transientFileError(err) {
 			return false, fmt.Errorf("lock identity file: %w", err)
 		}
 		if fi, serr := os.Stat(lock); serr == nil && time.Since(fi.ModTime()) > lockStale {
@@ -204,7 +224,7 @@ func createExclusive(path string, data []byte) (bool, error) {
 	}
 	tmp := f.Name()
 	defer os.Remove(tmp)
-	if err := f.Chmod(fileMode); err != nil {
+	if err := securePrivateFile(f); err != nil {
 		f.Close()
 		return false, fmt.Errorf("set file mode: %w", err)
 	}
@@ -219,7 +239,7 @@ func createExclusive(path string, data []byte) (bool, error) {
 	if err := f.Close(); err != nil {
 		return false, fmt.Errorf("close file: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if _, err := retryTransient(func() (struct{}, error) { return struct{}{}, os.Rename(tmp, path) }); err != nil {
 		return false, fmt.Errorf("install file: %w", err)
 	}
 	return true, nil

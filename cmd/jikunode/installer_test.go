@@ -4,11 +4,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
 func TestUserInstallerSystemdAvailability(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the systemd installer is a POSIX shell script")
+	}
 	for _, available := range []bool{true, false} {
 		t.Run(map[bool]string{true: "available", false: "unavailable"}[available], func(t *testing.T) {
 			home := t.TempDir()

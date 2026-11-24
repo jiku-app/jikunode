@@ -3,6 +3,7 @@ package upgrade
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -20,7 +21,6 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -62,6 +62,7 @@ type Options struct {
 	BaseURL    string
 	PublicKey  ed25519.PublicKey
 	Executable string
+	GOOS       string
 	GOARCH     string
 }
 type Result struct {
@@ -213,15 +214,19 @@ func Upgrade(ctx context.Context, opts Options) (Result, error) {
 		return result, err
 	}
 	defer lock.Close()
-	if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err = tryLock(lock); err != nil {
 		return result, errors.New("upgrade: already in progress")
 	}
-	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	defer unlock(lock)
 	arch := opts.GOARCH
 	if arch == "" {
 		arch = runtime.GOARCH
 	}
-	asset := fmt.Sprintf("jikunode_%s_linux_%s.tar.gz", target[1:], arch)
+	goos := opts.GOOS
+	if goos == "" {
+		goos = runtime.GOOS
+	}
+	asset := AssetName(target, goos, arch)
 	prefix := "/releases/download/" + target + "/"
 	checksums, err := get(prefix+"checksums.txt", MaxChecksumsSize)
 	if err != nil {
@@ -258,59 +263,172 @@ func Upgrade(ctx context.Context, opts Options) (Result, error) {
 	if expected != hex.EncodeToString(sum[:]) {
 		return result, errors.New("upgrade: checksum mismatch")
 	}
-	f, err := os.CreateTemp(filepath.Dir(executable), ".jikunode-upgrade-*")
+	files, err := extract(archive, goos)
 	if err != nil {
 		return result, err
 	}
-	defer os.Remove(f.Name())
-	defer f.Close()
+	return result, install(ctx, executable, target, files)
+}
+
+// AssetName is the release archive name for one platform: a gzipped tar
+// holding jikunode on Unix, a zip holding jikunode.exe (and the tray app) on
+// Windows.
+func AssetName(version, goos, arch string) string {
+	v := strings.TrimPrefix(version, "v")
+	if goos == "windows" {
+		return fmt.Sprintf("jikunode_%s_windows_%s.zip", v, arch)
+	}
+	return fmt.Sprintf("jikunode_%s_%s_%s.tar.gz", v, goos, arch)
+}
+
+// WindowsBinary and WindowsTrayBinary are the file names inside a Windows
+// release archive. The tray app is optional; nothing else is allowed.
+const (
+	WindowsBinary     = "jikunode.exe"
+	WindowsTrayBinary = "jikunode-tray.exe"
+)
+
+// releaseFile is one regular file taken from a release archive.
+type releaseFile struct {
+	name string
+	data []byte
+}
+
+// extract reads the release archive for goos and returns its files, main
+// binary first. Anything other than the expected regular files is refused.
+func extract(archive []byte, goos string) ([]releaseFile, error) {
+	if goos == "windows" {
+		return extractZip(archive)
+	}
+	return extractTar(archive)
+}
+
+func extractTar(archive []byte) ([]releaseFile, error) {
 	gz, err := gzip.NewReader(bytes.NewReader(archive))
 	if err != nil {
-		return result, err
+		return nil, err
 	}
 	defer gz.Close()
 	tr := tar.NewReader(gz)
 	h, err := tr.Next()
 	if err != nil {
-		return result, err
+		return nil, err
 	}
 	if h.Name != "jikunode" || h.Typeflag != tar.TypeReg || h.Size > MaxArchiveSize {
-		return result, errors.New("upgrade: invalid archive entry")
+		return nil, errors.New("upgrade: invalid archive entry")
 	}
-	if _, err = io.Copy(f, io.LimitReader(tr, MaxArchiveSize+1)); err != nil {
-		return result, err
+	data, err := bounded(tr, MaxArchiveSize)
+	if err != nil {
+		return nil, err
 	}
 	if _, err = tr.Next(); err != io.EOF {
-		return result, errors.New("upgrade: archive must contain exactly one binary")
+		return nil, errors.New("upgrade: archive must contain exactly one binary")
 	}
-	if err = f.Chmod(0755); err != nil {
-		return result, err
+	return []releaseFile{{name: "jikunode", data: data}}, nil
+}
+
+func extractZip(archive []byte) ([]releaseFile, error) {
+	zr, err := zip.NewReader(bytes.NewReader(archive), int64(len(archive)))
+	if err != nil {
+		return nil, errors.New("upgrade: invalid archive")
 	}
-	if err = f.Sync(); err != nil {
-		return result, err
+	var main, tray *releaseFile
+	var total int64
+	for _, f := range zr.File {
+		if !f.Mode().IsRegular() || f.UncompressedSize64 > uint64(MaxArchiveSize) {
+			return nil, errors.New("upgrade: invalid archive entry")
+		}
+		var slot **releaseFile
+		switch f.Name {
+		case WindowsBinary:
+			slot = &main
+		case WindowsTrayBinary:
+			slot = &tray
+		default:
+			return nil, errors.New("upgrade: invalid archive entry")
+		}
+		if *slot != nil {
+			return nil, errors.New("upgrade: duplicate archive entry")
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return nil, errors.New("upgrade: invalid archive entry")
+		}
+		data, err := bounded(rc, MaxArchiveSize-total)
+		_ = rc.Close()
+		if err != nil {
+			return nil, err
+		}
+		total += int64(len(data))
+		*slot = &releaseFile{name: f.Name, data: data}
 	}
-	if err = f.Close(); err != nil {
-		return result, err
+	if main == nil {
+		return nil, errors.New("upgrade: archive is missing " + WindowsBinary)
 	}
-	cmd := exec.CommandContext(ctx, f.Name(), "version")
+	files := []releaseFile{*main}
+	if tray != nil {
+		files = append(files, *tray)
+	}
+	return files, nil
+}
+
+// install stages every release file next to executable, smoke-tests the main
+// binary and only then swaps the files into place. files[0] replaces
+// executable; the others replace their namesakes in the same directory.
+func install(ctx context.Context, executable, target string, files []releaseFile) error {
+	dir := filepath.Dir(executable)
+	staged := make([]string, 0, len(files))
+	defer func() {
+		for _, name := range staged {
+			_ = os.Remove(name)
+		}
+	}()
+	for _, file := range files {
+		// Keep the extension: Windows only runs a staged file named *.exe.
+		f, err := os.CreateTemp(dir, ".jikunode-upgrade-*"+filepath.Ext(executable))
+		if err != nil {
+			return err
+		}
+		staged = append(staged, f.Name())
+		_, err = f.Write(file.data)
+		if err == nil {
+			err = f.Chmod(0755)
+		}
+		if err == nil {
+			err = f.Sync()
+		}
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			return err
+		}
+	}
+	cmd := exec.CommandContext(ctx, staged[0], "version")
 	var output limitedOutput
 	cmd.Stdout = &output
 	cmd.Stderr = io.Discard
-	if err = cmd.Run(); err != nil || strings.TrimSpace(output.String()) != "jikunode "+target {
-		return result, errors.New("upgrade: binary version check failed")
+	hideWindow(cmd)
+	if err := cmd.Run(); err != nil || strings.TrimSpace(output.String()) != "jikunode "+target {
+		return errors.New("upgrade: binary version check failed")
 	}
-	prev := filepath.Join(filepath.Dir(executable), "jikunode.prev")
-	if err = os.Remove(prev); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return result, err
+	for i, file := range files {
+		dst := executable
+		if i > 0 {
+			dst = filepath.Join(dir, file.name)
+		}
+		if err := replace(staged[i], dst); err != nil {
+			return err
+		}
 	}
-	// A hard link preserves the old inode while the live path remains intact until rename.
-	if err = os.Link(executable, prev); err != nil {
-		return result, err
-	}
-	if err = os.Rename(f.Name(), executable); err != nil {
-		return result, err
-	}
-	return result, nil
+	return nil
+}
+
+// PrevPath is where a replaced binary is kept: jikunode.prev on Unix,
+// jikunode.prev.exe (and jikunode-tray.prev.exe) on Windows.
+func PrevPath(path string) string {
+	ext := filepath.Ext(path)
+	return strings.TrimSuffix(path, ext) + ".prev" + ext
 }
 
 type limitedOutput struct{ bytes.Buffer }

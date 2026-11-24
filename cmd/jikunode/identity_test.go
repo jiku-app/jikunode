@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 
@@ -59,8 +60,13 @@ func TestIdentityPersistenceAndConcurrentInitialization(t *testing.T) {
 	if err != nil || c.NodeID != id || string(k) != key {
 		t.Fatal("restart changed identity", err)
 	}
-	if info, err := os.Stat(c.KeyPath); err != nil || info.Mode().Perm() != 0600 {
+	if err := nodeagent.CheckPrivateFile(c.KeyPath); err != nil {
 		t.Fatal("key permissions", err)
+	}
+	if runtime.GOOS != "windows" {
+		if info, err := os.Stat(c.KeyPath); err != nil || info.Mode().Perm() != 0600 {
+			t.Fatal("key permissions", err)
+		}
 	}
 	if nodeagent.IsBound(dir) {
 		t.Fatal("offline identity is already bound")

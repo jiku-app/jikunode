@@ -9,11 +9,9 @@ package main
 
 import (
 	"crypto/ed25519"
-	"fmt"
-	"github.com/jiku-app/jikunode/nodeagent"
-	"os"
 	"path/filepath"
-	"strings"
+
+	"github.com/jiku-app/jikunode/nodeagent"
 )
 
 const (
@@ -32,16 +30,13 @@ const (
 )
 
 // configDir returns $XDG_CONFIG_HOME/jikunode, falling back to
-// ~/.config/jikunode.
+// ~/.config/jikunode on Unix and %APPDATA%\jikunode on Windows.
 func configDir() (string, error) {
-	if xdg := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); xdg != "" {
-		return filepath.Join(xdg, configDirName), nil
-	}
-	home, err := os.UserHomeDir()
+	root, err := configRoot()
 	if err != nil {
-		return "", fmt.Errorf("locate home directory: %w", err)
+		return "", err
 	}
-	return filepath.Join(home, ".config", configDirName), nil
+	return filepath.Join(root, configDirName), nil
 }
 
 // configPath returns the config file path.
