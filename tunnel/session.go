@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -361,18 +362,56 @@ const (
 	dialOK byte = iota
 	dialError
 )
+
+// DialCode is the wire code a node returns when it refuses a stream dial.
+type DialCode byte
+
 const (
-	dialRefused byte = iota + 1
-	dialFailed
-	dialTimeout
+	// DialRefused: the destination is a refused (non-public) address.
+	DialRefused DialCode = iota + 1
+	// DialFailed: the dial failed (resolver error, refused, unreachable).
+	DialFailed
+	// DialTimeout: the dial timed out.
+	DialTimeout
+	// DialNoIPv6: a seat dial found no IPv6 address for the target.
+	DialNoIPv6
+	// DialSeatRefused: the requested seat source is not inside this node's pool.
+	DialSeatRefused
 )
+
+// DialRejectedError is returned when the node refused the dial. It wraps
+// contract.ErrNodeDialFailed, so every existing egress classification still
+// applies, and carries the wire code so a caller can tell a permanent
+// condition (DialNoIPv6, DialSeatRefused) from a transport failure.
+type DialRejectedError struct{ Code DialCode }
+
+func (e *DialRejectedError) Error() string {
+	return fmt.Sprintf("node rejected dial (code %d)", byte(e.Code))
+}
+
+// Unwrap exposes contract.ErrNodeDialFailed to errors.Is.
+func (e *DialRejectedError) Unwrap() error { return contract.ErrNodeDialFailed }
 
 // OpenStream opens a data stream and writes the stream header. The target
 // host travels the wire but is never logged. ctx bounds the open: yamux has
 // no context-aware open, so the open is raced against ctx; if ctx wins the
 // late open (if any) is closed when it completes.
 func (s *ServerSession) OpenStream(ctx context.Context, host string, port int) (net.Conn, error) {
-	hdr := &StreamHeader{V: ProtocolVersion, TargetHost: host, TargetPort: port}
+	return s.openStream(ctx, &StreamHeader{V: ProtocolVersion, TargetHost: host, TargetPort: port})
+}
+
+// OpenStreamFrom opens a seat-addressed data stream: the node must egress from
+// source, an address inside one of its configured pool prefixes. A node that
+// did not advertise CapabilitySeatDial rejects it with DialSeatRefused, which
+// is why the caller must check the hello capabilities first.
+func (s *ServerSession) OpenStreamFrom(ctx context.Context, host string, port int, source net.IP) (net.Conn, error) {
+	if source == nil || source.To4() != nil || source.IsUnspecified() {
+		return nil, fmt.Errorf("%w: seat source must be an IPv6 address", contract.ErrNodeDialFailed)
+	}
+	return s.openStream(ctx, &StreamHeader{V: ProtocolVersionSeat, TargetHost: host, TargetPort: port, SourceIPv6: source.String()})
+}
+
+func (s *ServerSession) openStream(ctx context.Context, hdr *StreamHeader) (net.Conn, error) {
 	if err := hdr.Validate(); err != nil {
 		return nil, err
 	}
@@ -403,7 +442,7 @@ func (s *ServerSession) OpenStream(ctx context.Context, host string, port int) (
 		var code [1]byte
 		_, err = io.ReadFull(stream, code[:])
 		if err == nil {
-			err = fmt.Errorf("node rejected dial (code %d)", code[0])
+			err = &DialRejectedError{Code: DialCode(code[0])}
 		}
 	} else if err == nil && status[0] != dialOK {
 		err = errors.New("invalid dial response")
@@ -414,7 +453,7 @@ func (s *ServerSession) OpenStream(ctx context.Context, host string, port int) (
 	_ = stream.SetReadDeadline(time.Time{})
 	if err != nil {
 		_ = stream.Close()
-		return nil, fmt.Errorf("%w: stream dial response: %v", contract.ErrNodeDialFailed, err)
+		return nil, fmt.Errorf("%w: stream dial response: %w", contract.ErrNodeDialFailed, err)
 	}
 	return stream, nil
 }
@@ -453,6 +492,11 @@ type ClientConfig struct {
 	ChallengeTimeout  time.Duration          // 0 => 10 s (challenge and ack reads)
 	Metrics           contract.TunnelMetrics // nil-safe
 	Logger            *slog.Logger           // nil => discard
+	// PoolPrefixes lists the IPv6 prefixes this node may egress from when the
+	// hub asks for a seat (a ProtocolVersionSeat stream header). Empty means
+	// this is not a pool node: it advertises no CapabilitySeatDial and refuses
+	// every seat dial, so a compromised hub cannot make it spoof an address.
+	PoolPrefixes []netip.Prefix
 }
 
 // ClientSession is the node side of one tunnel connection.
@@ -582,6 +626,7 @@ func (s *ClientSession) handshake() error {
 	}
 	if err := WriteControl(ctrl, &Control{Hello: &Hello{
 		NodeID: s.cfg.NodeID, Version: s.cfg.Version, Nonce: nonce, HeartbeatSeconds: int(s.heartbeatInterval() / time.Second),
+		Capabilities: s.capabilities(),
 	}}); err != nil {
 		return fmt.Errorf("tunnel: send hello: %w", err)
 	}
@@ -702,9 +747,10 @@ func (s *ClientSession) serveStreams(ctx context.Context) error {
 	}
 }
 
-// handleStream reads one stream header (10 s deadline, version 1), dials the
-// target through the DialPolicy and copies bytes both ways with half-close
-// propagation. On any error the stream is closed.
+// handleStream reads one stream header (10 s deadline), dials the target
+// through the DialPolicy and copies bytes both ways with half-close
+// propagation. A seat-addressed header additionally requires a source inside
+// this node's pool prefixes. On any error the stream is closed.
 func (s *ClientSession) handleStream(ctx context.Context, stream *yamux.Stream) {
 	hdr, err := readStreamHeader(stream, s.headerTimeout())
 	if err != nil {
@@ -712,21 +758,36 @@ func (s *ClientSession) handleStream(ctx context.Context, stream *yamux.Stream) 
 		_ = stream.Close()
 		return
 	}
+	var source net.IP
+	if hdr.V == ProtocolVersionSeat {
+		source, err = hdr.Source()
+		if err == nil && !s.seatAllowed(source) {
+			s.logger().Info("tunnel: seat refused", "event", "seat_refused", "node_id", s.cfg.NodeID)
+			s.rejectStream(stream, DialSeatRefused)
+			return
+		}
+		if err != nil {
+			s.logger().Info("tunnel: stream header rejected", "event", "stream_header_rejected", "node_id", s.cfg.NodeID)
+			_ = stream.Close()
+			return
+		}
+	}
 	dialCtx, cancel := context.WithTimeout(ctx, streamDialTimeout)
 	defer cancel()
-	conn, err := s.policy().Dial(dialCtx, hdr.TargetHost, hdr.TargetPort)
+	conn, err := s.dialStream(dialCtx, hdr, source)
 	if err != nil {
 		s.logger().Info("tunnel: target refused", "event", "target_refused", "node_id", s.cfg.NodeID)
-		code := dialFailed
+		code := DialFailed
 		var refused *RefusedAddrError
-		if errors.As(err, &refused) {
-			code = dialRefused
-		} else if errors.Is(err, context.DeadlineExceeded) {
-			code = dialTimeout
+		switch {
+		case errors.As(err, &refused):
+			code = DialRefused
+		case errors.Is(err, ErrNoIPv6):
+			code = DialNoIPv6
+		case errors.Is(err, context.DeadlineExceeded):
+			code = DialTimeout
 		}
-		_ = stream.SetWriteDeadline(time.Now().Add(streamDialTimeout))
-		_, _ = stream.Write([]byte{dialError, code})
-		_ = stream.Close()
+		s.rejectStream(stream, code)
 		return
 	}
 	_ = stream.SetWriteDeadline(time.Now().Add(streamDialTimeout))
@@ -738,6 +799,48 @@ func (s *ClientSession) handleStream(ctx context.Context, stream *yamux.Stream) 
 		return
 	}
 	relay(s.ys.CloseChan(), stream, conn)
+}
+
+// dialStream dials the header target, binding the seat source when the header
+// is seat-addressed.
+func (s *ClientSession) dialStream(ctx context.Context, hdr *StreamHeader, source net.IP) (net.Conn, error) {
+	policy := s.policy()
+	if source == nil {
+		return policy.Dial(ctx, hdr.TargetHost, hdr.TargetPort)
+	}
+	return policy.DialFrom(ctx, hdr.TargetHost, hdr.TargetPort, source)
+}
+
+// rejectStream writes the dial-refused response and closes the stream.
+func (s *ClientSession) rejectStream(stream *yamux.Stream, code DialCode) {
+	_ = stream.SetWriteDeadline(time.Now().Add(streamDialTimeout))
+	_, _ = stream.Write([]byte{dialError, byte(code)})
+	_ = stream.Close()
+}
+
+// capabilities reports the wire capabilities this node advertises in Hello.
+func (s *ClientSession) capabilities() []string {
+	if len(s.cfg.PoolPrefixes) == 0 {
+		return nil
+	}
+	return []string{CapabilitySeatDial}
+}
+
+// seatAllowed reports whether src is inside one of the configured pool
+// prefixes. It is the node-side half of the seat invariant: a hub can pick a
+// seat address, but never an address this node was not told to use.
+func (s *ClientSession) seatAllowed(src net.IP) bool {
+	addr, ok := netip.AddrFromSlice(src)
+	if !ok {
+		return false
+	}
+	addr = addr.Unmap()
+	for _, p := range s.cfg.PoolPrefixes {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 // readStreamHeader reads one framed stream header within timeout; V must be 1.

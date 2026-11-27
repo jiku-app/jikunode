@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,6 +34,10 @@ type Config struct {
 	HubURL      string `json:"hub_url"`
 	NodeID      string `json:"node_id"`
 	KeyPath     string `json:"key_path"`
+	// PoolPrefixes lists the IPv6 prefixes this node may egress from when the
+	// hub assigns it seats (a Jiku egress pool). Each entry must be IPv6 and no
+	// more specific than /64. Empty for an ordinary supplier node.
+	PoolPrefixes []string `json:"pool_prefixes,omitempty"`
 }
 
 // LoadConfig reads and validates the config file in dir.
@@ -61,7 +66,35 @@ func LoadConfig(dir string) (*Config, error) {
 	if _, err := TunnelURL(cfg.HubURL); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	if _, err := cfg.Prefixes(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	return &cfg, nil
+}
+
+// Prefixes parses PoolPrefixes into the node-side seat allowlist. It fails
+// closed: an unparsable, non-IPv6 or too-specific entry is a configuration
+// error, never silently ignored.
+func (c *Config) Prefixes() ([]netip.Prefix, error) {
+	out := make([]netip.Prefix, 0, len(c.PoolPrefixes))
+	for _, raw := range c.PoolPrefixes {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			continue
+		}
+		p, err := netip.ParsePrefix(trimmed)
+		if err != nil {
+			return nil, fmt.Errorf("invalid pool prefix %q: %w", raw, err)
+		}
+		if !p.Addr().Is6() || p.Addr().Is4In6() {
+			return nil, fmt.Errorf("pool prefix %q is not IPv6", raw)
+		}
+		if p.Bits() > 64 {
+			return nil, fmt.Errorf("pool prefix %q is more specific than /64", raw)
+		}
+		out = append(out, p.Masked())
+	}
+	return out, nil
 }
 
 // saveConfig writes the config atomically with mode 0600, creating the config

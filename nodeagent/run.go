@@ -245,6 +245,11 @@ func (r *Runner) connect(ctx context.Context) error {
 		ready = newHandshakeReady()
 		logger = slog.New(&handshakeReadyHandler{Handler: logger.Handler(), ready: ready})
 	}
+	prefixes, err := cfg.Prefixes()
+	if err != nil {
+		_ = ws.Close(websocket.StatusInternalError, "")
+		return err
+	}
 	sess, err := tunnel.NewClientSession(tunnel.ClientConfig{
 		OnUpgrade: r.upgradeHandler(cfg),
 		OnDesiredState: func(st contract.RunState) {
@@ -257,6 +262,7 @@ func (r *Runner) connect(ctx context.Context) error {
 		PrivateKey:        key,
 		Policy:            r.policy(),
 		HeartbeatInterval: r.HeartbeatInterval,
+		PoolPrefixes:      prefixes,
 		Logger:            logger,
 	})
 	if err != nil {

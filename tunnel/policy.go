@@ -58,6 +58,11 @@ var cgnatRange = func() *net.IPNet {
 	return n
 }()
 
+// ErrNoIPv6 reports that a seat-addressed dial found no IPv6 address for the
+// target. It is distinct from a transport failure so the hub can fail over
+// deliberately instead of treating it as a node fault.
+var ErrNoIPv6 = errors.New("tunnel: target has no IPv6 address")
+
 // RefusedAddrError reports that a resolved address belongs to a refused
 // class; the address itself is included because it is a dial target, never a
 // secret.
@@ -100,6 +105,17 @@ func checkIP(ip net.IP) error {
 // or multicast, the whole dial is refused (fail closed: one bad address in a
 // round-robin answer must not leak the connection).
 func (p *DialPolicy) Check(ctx context.Context, host string, port int) (net.IP, error) {
+	ips, err := p.resolveChecked(ctx, host, port)
+	if err != nil {
+		return nil, err
+	}
+	return ips[0], nil
+}
+
+// resolveChecked resolves host and applies the public-address rule to every
+// answer, returning them in resolver order. It is the single place the refusal
+// policy is implemented, so Check and DialFrom cannot drift apart.
+func (p *DialPolicy) resolveChecked(ctx context.Context, host string, port int) ([]net.IP, error) {
 	if port < 1 || port > 65535 {
 		return nil, fmt.Errorf("tunnel: port %d out of range", port)
 	}
@@ -121,19 +137,14 @@ func (p *DialPolicy) Check(ctx context.Context, host string, port int) (net.IP, 
 		return nil, fmt.Errorf("tunnel: %s resolves to no address", host)
 	}
 
-	var pinned net.IP
+	ips := make([]net.IP, 0, len(addrs))
 	for _, a := range addrs {
 		if err := checkIP(a.IP); err != nil {
 			return nil, &RefusedAddrError{IP: a.IP}
 		}
-		if pinned == nil {
-			pinned = a.IP
-		}
+		ips = append(ips, a.IP)
 	}
-	if pinned == nil {
-		return nil, fmt.Errorf("tunnel: %s resolves to no dialable address", host)
-	}
-	return pinned, nil
+	return ips, nil
 }
 
 // Dial checks the destination and then dials the checked IP directly (the
@@ -152,6 +163,40 @@ func (p *DialPolicy) Dial(ctx context.Context, host string, port int) (net.Conn,
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("tunnel: dial %s: %w", ip, err)
+	}
+	return conn, nil
+}
+
+// DialFrom is Dial with a pinned IPv6 source address: a Jiku egress-pool seat.
+// It keeps the same post-DNS refusal rule, dials only an AAAA answer (IPv6 is
+// the whole point of a seat, so an IPv4-only target is ErrNoIPv6 and never a
+// silent fallback to another address), and binds source as the local address.
+func (p *DialPolicy) DialFrom(ctx context.Context, host string, port int, source net.IP) (net.Conn, error) {
+	if source == nil || source.To4() != nil || source.IsUnspecified() {
+		return nil, errors.New("tunnel: seat source must be an IPv6 address")
+	}
+	ips, err := p.resolveChecked(ctx, host, port)
+	if err != nil {
+		return nil, err
+	}
+	var pinned net.IP
+	for _, ip := range ips {
+		if ip.To4() == nil {
+			pinned = ip
+			break
+		}
+	}
+	if pinned == nil {
+		return nil, fmt.Errorf("%w: %s", ErrNoIPv6, host)
+	}
+	addr := net.JoinHostPort(pinned.String(), itoa(port))
+	if p != nil && p.DialContext != nil {
+		return p.DialContext(ctx, "tcp6", addr)
+	}
+	d := net.Dialer{Timeout: p.timeout(), LocalAddr: &net.TCPAddr{IP: source}}
+	conn, err := d.DialContext(ctx, "tcp6", addr)
+	if err != nil {
+		return nil, fmt.Errorf("tunnel: dial %s from %s: %w", pinned, source, err)
 	}
 	return conn, nil
 }

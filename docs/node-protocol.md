@@ -39,7 +39,7 @@ shape fails the session:
 
 | Message | Direction | Fields | Notes |
 |---|---|---|---|
-| `hello` | node → hub | `node_id` (canonical UUID), `version` (≤ 64 bytes), `nonce` (32 bytes), `heartbeat_seconds` (required integer, 5..300) | must be the hub's first control read, within 5 s; invalid heartbeat interval closes the session. There is no `public_key` or `name`: both were registered at bind time |
+| `hello` | node → hub | `node_id` (canonical UUID), `version` (≤ 64 bytes), `nonce` (32 bytes), `heartbeat_seconds` (required integer, 5..300), `capabilities` (optional list) | must be the hub's first control read, within 5 s; invalid heartbeat interval closes the session. There is no `public_key` or `name`: both were registered at bind time. The only capability today is `seat-dial` (`tunnel.CapabilitySeatDial`), advertised by a pool node; unknown values are ignored |
 | `challenge` | hub → node | `nonce` (32 bytes, crypto/rand) | issued through a per-hub `NonceLog` that refuses duplicate nonces |
 | `proof` | node → hub | `signature` (64 bytes) | ed25519 signature, below |
 | `heartbeat` | hub → node → hub | — | hub sends one each declared interval (`heartbeat_seconds`; CLI 10 s, mobile 60 s); node immediately echoes it; the handshake ack is not echoed. Either side fails after 3 intervals without the peer heartbeat/echo; RTT measures send-to-echo time. Heartbeat timeout follows this declared window. The separate hub presence lease is described below |
@@ -95,12 +95,14 @@ The hub opens one yamux stream per egress connection:
 
 1. Hub writes the framed stream header:
    `{"v":1,"target_host":"api.anthropic.com","target_port":443}`
-   (`tunnel.StreamHeader`; `v` must be `1`, the only accepted version).
+   (`tunnel.StreamHeader`; `v` is `1` or `2`, any other version is refused).
 2. The node reads the header within 10 s, resolves `target_host`, applies the
    destination policy (below) and dials the checked IP.
 3. The node answers with a 1-byte dial status within 5 s:
-   `0x00` = connected; `0x01` = error, followed by one code byte:
-   `1` refused by the destination policy, `2` dial failed, `3` dial timeout.
+   `0x00` = connected; `0x01` = error, followed by one code byte
+   (`tunnel.DialCode`): `1` refused by the destination policy, `2` dial
+   failed, `3` dial timeout, `4` a seat dial found no IPv6 address for the
+   target, `5` the requested seat source is outside this node's pool.
 4. On `0x00`, raw bytes flow in both directions until either side closes;
    half-closes propagate (EOF towards the hub half-closes the target and vice
    versa), and the session's close force-closes the target so a silent peer
@@ -109,12 +111,35 @@ The hub opens one yamux stream per egress connection:
 The target host travels the wire (the node must know where to connect) but is
 never logged on either side.
 
+### Seat-addressed streams (`v: 2`)
+
+A **pool node** is a node configured with `pool_prefixes` (its
+`ClientConfig.PoolPrefixes`); it advertises `seat-dial` in `hello`. The hub may
+then open a seat-addressed stream:
+
+`{"v":2,"target_host":"api.anthropic.com","target_port":443,"source_ipv6":"2600:70ff:a477:abcd::2"}`
+
+The node binds `source_ipv6` as the connection's local address, dials the
+**IPv6** answer of `target_host` (`tcp6`), and refuses with code `4`
+(`ErrNoIPv6`) instead of falling back to IPv4. `source_ipv6` must be a public
+IPv6 unicast address inside one of the node's configured pool prefixes;
+anything else is refused with code `5` before any resolution or dial, so a
+compromised hub cannot make a node spoof an address it was not told to use. A
+node that did not advertise `seat-dial` refuses every `v: 2` header the same
+way. A `v: 1` header must not carry `source_ipv6`.
+
+Because the header version is part of the wire contract, the hub must send a
+`v: 2` header only after the hello advertised `seat-dial`; upgrade-first
+ordering still applies, so a pool node is upgraded before any seat-addressed
+dial is attempted.
+
 ## Node-side destination policy
 
 After DNS resolution the node refuses the dial when **any** resolved address
 is private, loopback, link-local, CGNAT (100.64.0.0/10), IPv6 ULA,
 unspecified, multicast or the IPv4 broadcast address
-(`tunnel.DialPolicy`). It then dials the **checked IP directly — never the
+(`tunnel.DialPolicy`). The same rule applies to a seat-addressed dial before
+the IPv6 answer is chosen, so a mixed answer is still refused whole. It then dials the **checked IP directly — never the
 hostname** — so the DNS answer cannot change between the check and the dial.
 There is deliberately no host or port allowlist (owner decision); this
 post-resolution private-address refusal is the only node-side destination

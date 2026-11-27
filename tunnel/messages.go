@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"strconv"
 	"time"
 
@@ -24,8 +25,19 @@ import (
 // Wire constants. Timeouts are conservative: a peer that stalls any framing
 // step fails the session instead of pinning resources.
 const (
-	// ProtocolVersion is the only accepted stream-header version.
+	// ProtocolVersion is the plain data-stream header: the node dials the
+	// target from its own primary address.
 	ProtocolVersion = 1
+
+	// ProtocolVersionSeat is the seat-addressed data-stream header: it names
+	// the IPv6 source the node must egress from (a Jiku egress-pool seat).
+	// Only a node that advertises CapabilitySeatDial may receive it.
+	ProtocolVersionSeat = 2
+
+	// CapabilitySeatDial is advertised in Hello by a node configured with pool
+	// prefixes (see ClientConfig.PoolPrefixes). A hub must not send a
+	// ProtocolVersionSeat header to a node that did not advertise it.
+	CapabilitySeatDial = "seat-dial"
 
 	// MaxControlMessageSize bounds one framed control message (or stream
 	// header). Rejected before allocation.
@@ -55,10 +67,25 @@ const (
 // looks the node up (it must already be bound); the key and name were
 // registered at bind time, never at connect time.
 type Hello struct {
-	NodeID           string `json:"node_id"`
-	Version          string `json:"version"`
-	Nonce            []byte `json:"nonce"`
-	HeartbeatSeconds int    `json:"heartbeat_seconds"`
+	NodeID           string   `json:"node_id"`
+	Version          string   `json:"version"`
+	Nonce            []byte   `json:"nonce"`
+	HeartbeatSeconds int      `json:"heartbeat_seconds"`
+	Capabilities     []string `json:"capabilities,omitempty"`
+}
+
+// HasCapability reports whether the hello advertises c. An unknown capability
+// is ignored, never an error.
+func (h *Hello) HasCapability(c string) bool {
+	if h == nil {
+		return false
+	}
+	for _, got := range h.Capabilities {
+		if got == c {
+			return true
+		}
+	}
+	return false
 }
 
 // Challenge carries the hub's 32 random bytes (crypto/rand).
@@ -123,6 +150,22 @@ type StreamHeader struct {
 	V          int    `json:"v"`
 	TargetHost string `json:"target_host"`
 	TargetPort int    `json:"target_port"`
+	// SourceIPv6 is the IPv6 source the node must egress from. It is set
+	// exactly on a ProtocolVersionSeat header and empty on version 1.
+	SourceIPv6 string `json:"source_ipv6,omitempty"`
+}
+
+// Source returns the seat source address of a seat-addressed header and
+// rejects anything that is not a global IPv6 unicast address.
+func (h *StreamHeader) Source() (net.IP, error) {
+	ip := net.ParseIP(h.SourceIPv6)
+	if ip == nil || ip.To4() != nil {
+		return nil, fmt.Errorf("tunnel: stream header source %q is not an IPv6 address", h.SourceIPv6)
+	}
+	if !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLoopback() {
+		return nil, fmt.Errorf("tunnel: stream header source %q is not a public IPv6 address", h.SourceIPv6)
+	}
+	return ip, nil
 }
 
 // Control is the tagged envelope on the control stream: exactly one field is
@@ -238,14 +281,24 @@ func ReadControl(r io.Reader) (*Control, error) {
 	return &c, nil
 }
 
-// Validate checks a stream header: version 1, a plausible host and a valid
-// port. Unknown versions are refused (no forward compatibility: fail closed).
+// Validate checks a stream header: a known version, the source rule of that
+// version, a plausible host and a valid port. Unknown versions are refused (no
+// forward compatibility: fail closed).
 func (h *StreamHeader) Validate() error {
 	if h == nil {
 		return errors.New("tunnel: nil stream header")
 	}
-	if h.V != ProtocolVersion {
-		return fmt.Errorf("tunnel: stream header version %d not supported (want %d)", h.V, ProtocolVersion)
+	switch h.V {
+	case ProtocolVersion:
+		if h.SourceIPv6 != "" {
+			return errors.New("tunnel: version 1 stream header must not carry a source address")
+		}
+	case ProtocolVersionSeat:
+		if _, err := h.Source(); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("tunnel: stream header version %d not supported (want %d or %d)", h.V, ProtocolVersion, ProtocolVersionSeat)
 	}
 	if h.TargetHost == "" || len(h.TargetHost) > 253 {
 		return errors.New("tunnel: stream header target host must be 1..253 characters")
