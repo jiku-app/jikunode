@@ -128,6 +128,12 @@ compromised hub cannot make a node spoof an address it was not told to use. A
 node that did not advertise `seat-dial` refuses every `v: 2` header the same
 way. A `v: 1` header must not carry `source_ipv6`.
 
+A seat address is never assigned to an interface: the pool host makes the seat
+prefix locally deliverable with a local-table route, and the node sets
+`IPV6_FREEBIND` on the socket so `bind()` accepts it. The host therefore needs
+no `net.ipv6.ip_nonlocal_bind`. Off Linux the seat dial fails closed (no
+`IPV6_FREEBIND`), which is fine because every pool node is a Linux host.
+
 Because the header version is part of the wire contract, the hub must send a
 `v: 2` header only after the hello advertised `seat-dial`; upgrade-first
 ordering still applies, so a pool node is upgraded before any seat-addressed

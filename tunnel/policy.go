@@ -193,7 +193,10 @@ func (p *DialPolicy) DialFrom(ctx context.Context, host string, port int, source
 	if p != nil && p.DialContext != nil {
 		return p.DialContext(ctx, "tcp6", addr)
 	}
-	d := net.Dialer{Timeout: p.timeout(), LocalAddr: &net.TCPAddr{IP: source}}
+	// Control lets the socket bind a source that no interface carries: the pool
+	// host only makes the seat prefix locally deliverable (local-table route),
+	// so bind() needs IPV6_FREEBIND. Fail closed off Linux.
+	d := net.Dialer{Timeout: p.timeout(), LocalAddr: &net.TCPAddr{IP: source}, Control: freebindControl}
 	conn, err := d.DialContext(ctx, "tcp6", addr)
 	if err != nil {
 		return nil, fmt.Errorf("tunnel: dial %s from %s: %w", pinned, source, err)
