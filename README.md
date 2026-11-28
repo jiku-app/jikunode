@@ -1,8 +1,8 @@
 # JikuNode
 
-JikuNode is the supplier-side Jiku egress agent. It dials out to a Jiku hub,
-works behind NAT, and carries encrypted upstream traffic without holding
-provider credentials or seeing plaintext requests.
+JikuNode is the Jiku egress agent for suppliers and operator-managed pools.
+It dials out to a Jiku hub, works behind NAT, and carries encrypted upstream
+traffic without holding provider credentials or seeing plaintext requests.
 
 This repository is the single source of truth for the node agent and wire
 protocol. The hub and Android wrapper consume its public Go packages as a
@@ -46,10 +46,17 @@ key is sent to the hub. Configuration and the private key are written with
 restrictive permissions and are never printed. An unbound service stays idle;
 after binding, the running service connects automatically.
 
+For operator-managed Jiku pools, use `jikunode bind --pool-secret-file PATH`
+without a supplier code. The file must be readable by the service user and
+contain the hub's `JIKU_POOL_BIND_SECRET`; protect it with mode `0600`. Set
+`pool_prefixes` in `config.json` to the IPv6 prefixes assigned to this node
+(no more specific than `/64`). Rebinding preserves this list.
+
 Available commands:
 
 ```text
 jikunode bind <code> [--hub URL] [--name NAME]
+jikunode bind --pool-secret-file PATH [--hub URL] [--name NAME]
 jikunode run
 jikunode status
 jikunode pause

@@ -67,10 +67,24 @@ connection until binding succeeds:
 | `$XDG_CONFIG_HOME/jikunode/node.key` | `0600` | base64 of the 32-byte ed25519 seed |
 
 Binding uses this existing identity and registers its public key with an HTTP
-challenge and bind-proof-v2 signature; it opens no temporary tunnel. It writes
+challenge and a signed proof; it opens no temporary tunnel. It writes
 `config.json` and then the `bound` marker, which the running service picks up
 without a restart. Writes are atomic (temp file + rename).
 The offline UUID is stored in `node.id` (mode `0600`).
+
+For operator-only Jiku pool enrollment, put the hub's `JIKU_POOL_BIND_SECRET`
+in a mode-`0600` file readable by the service user, then bind without a supplier
+code:
+
+```sh
+sudo -u jikunode XDG_CONFIG_HOME=/var/lib/jikunode/.config \
+  jikunode bind --pool-secret-file /path/to/pool-secret --hub https://hub.example.com
+```
+
+After the first bind, set `pool_prefixes` in that user's `config.json` to the
+assigned IPv6 prefixes (e.g. `["2001:db8:100::/48"]`), then restart the service
+so the runner loads the allowlist. Rebinding preserves the list; the secret is
+not stored in the node config.
 
 ## Run
 

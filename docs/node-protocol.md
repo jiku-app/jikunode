@@ -153,11 +153,11 @@ policy. The dial timeout is 10 s.
 
 ## Binding (identity onboarding)
 
-A node that has not accepted a binding code is **idle**: `jikunode run` and the
+A node that has not completed a bind is **idle**: `jikunode run` and the
 Android core start, report state `unbound`, poll the local `bound` marker file
 every 2 s and make **no network connection at all** (no tunnel, no discovery,
 no DNS). The identity (UUID and ed25519 key) is created offline on first start.
-A node row exists only after a valid code was presented, so the hub has no
+A node row exists only after a valid bind, so the hub has no
 unbound sessions or inventory.
 
 The supplier obtains a fixed, reusable, rotatable binding code in the provider
@@ -169,7 +169,7 @@ and a bad checksum is invalid. Only this 10-character format is accepted. The CL
 app reject typos locally; the hub rejects a bad checksum as `invalid_request`
 before any database lookup.
 
-Binding is plain HTTP, no tunnel:
+Supplier binding uses HTTP requests, no tunnel (HTTPS for non-loopback hubs):
 
 1. `POST /v1/node/bind/challenge` with `{}` returns `{ "nonce": "<base64 32
    bytes>" }`. The nonce is **stateless**: `expiry_unix (8 bytes, big endian) ||
@@ -209,7 +209,17 @@ Binding is plain HTTP, no tunnel:
    most 3 outstanding unechoed heartbeats; echoes lagging by more than 3
    intervals fail the session.
 
-Node-side order (`nodeagent.Bind`): validate the code locally (no network on
+Pool binding is operator-only: `jikunode bind --pool-secret-file PATH` reads
+and trims a file containing the hub's `JIKU_POOL_BIND_SECRET`. It uses the
+same challenge and nonce, but the bind request sends `pool_secret` (1–256
+bytes) and an empty `code`. The signature covers `"jiku-bind-pool-proof-v1:" ||
+node_id || nonce || public_key || pool_secret`, with the same field encodings
+as the supplier proof. A bad or unconfigured secret is refused. The secret
+is not stored in `config.json`; configure the node's IPv6 `pool_prefixes`
+there separately. Binding and rebinding preserve any existing list.
+
+Node-side order (`nodeagent.Bind`, `nodeagent.BindPool`): validate the bind
+credential locally (no network on
 failure) -> create the identity offline if missing (exclusive atomic create, so
 the idle service and the CLI never overwrite each other; the loser reloads the
 winner's files) -> discover the hub only when no hub URL was given -> challenge

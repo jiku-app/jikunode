@@ -23,11 +23,13 @@ import (
 var Version = "0.1.0"
 
 // usageText is printed for a missing or unknown subcommand.
-const usageText = `jikunode - Jiku supplier egress node
+const usageText = `jikunode - Jiku egress node
 
 Usage:
   jikunode bind <code> [--hub URL] [--name NAME]   bind this node with a binding code (XXXXX-XXXXX,
                                                    any case, dash optional)
+  jikunode bind --pool-secret-file PATH [--hub URL] [--name NAME]
+                                                 bind an operator-managed Jiku pool agent
   jikunode run [--port PORT]                       idle until bound, then connect and serve streams
   jikunode pause [--port PORT]                     ask the hub to pause this node
   jikunode resume [--port PORT]                    ask the hub to run this node
@@ -38,8 +40,9 @@ Usage:
   jikunode version                                 print the version
 
 A node that is not bound makes no network connection at all. Bind it as the
-same user that runs the service: the code is saved in that user's config
-directory and the running service picks it up within a few seconds.
+same user that runs the service: binding writes that user's config and the
+running service picks it up within a few seconds. Neither bind credential is
+saved in the config.
 
 The status server listens on 127.0.0.1 only and never accepts or shows a
 credential: the node holds none.`
@@ -84,38 +87,51 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-// cmdBind implements: jikunode bind <code> [--hub URL] [--name NAME].
+// cmdBind accepts either a supplier code or an operator's pool secret file.
 func cmdBind(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("jikunode bind", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs.SetOutput(io.Discard) // Flag parsing errors may include argument text.
 	hub := fs.String("hub", "", "hub base URL (defaults to public node discovery)")
 	name := fs.String("name", "", "node name (max 40 characters)")
+	poolFile := fs.String("pool-secret-file", "", "path to the pool bind secret file")
 
-	// The documented form puts the code first, so take a leading positional
-	// before handing the rest to flag.Parse.
-	var code string
+	// The documented supplier form puts the code first, so take a leading
+	// positional before handing the rest to flag.Parse.
+	var positional []string
 	rest := args
 	if len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
-		code = rest[0]
+		positional = append(positional, rest[0])
 		rest = rest[1:]
 	}
 	if err := fs.Parse(rest); err != nil {
-		return 2
-	}
-	switch {
-	case code == "" && fs.NArg() == 1:
-		code = fs.Arg(0)
-	case code == "" && fs.NArg() > 1:
-		fmt.Fprintln(stderr, "bind takes exactly one code")
-		return 2
-	case code != "" && fs.NArg() > 0:
-		fmt.Fprintln(stderr, "bind takes exactly one code")
-		return 2
-	}
-	code = strings.TrimSpace(code)
-	if code == "" {
 		fmt.Fprintln(stderr, usageText)
 		return 2
+	}
+	positional = append(positional, fs.Args()...)
+	pool := false
+	fs.Visit(func(f *flag.Flag) { pool = pool || f.Name == "pool-secret-file" })
+	var credential string
+	if pool {
+		if len(positional) != 0 {
+			fmt.Fprintln(stderr, "bind cannot combine a positional code with --pool-secret-file")
+			return 2
+		}
+		if *poolFile == "" {
+			fmt.Fprintln(stderr, "--pool-secret-file requires a path")
+			return 2
+		}
+		data, err := os.ReadFile(*poolFile)
+		if err != nil {
+			fmt.Fprintln(stderr, "jikunode: could not read the pool bind secret file")
+			return 1
+		}
+		credential = strings.TrimSpace(string(data))
+	} else {
+		if len(positional) != 1 || strings.TrimSpace(positional[0]) == "" {
+			fmt.Fprintln(stderr, usageText)
+			return 2
+		}
+		credential = strings.TrimSpace(positional[0])
 	}
 
 	dir, err := configDir()
@@ -127,7 +143,11 @@ func cmdBind(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "jikunode: warning: running as root; this binds root's config directory %s, "+
 			"which the user service never reads. Re-run as the user that runs the service.\n", dir)
 	}
-	cfg, err := nodeagent.Bind(context.Background(), dir, strings.TrimSpace(*hub), code, *name, Version, nodeagent.Network{})
+	bind := nodeagent.Bind
+	if pool {
+		bind = nodeagent.BindPool
+	}
+	cfg, err := bind(context.Background(), dir, *hub, credential, *name, Version, nodeagent.Network{})
 	if err != nil {
 		fmt.Fprintf(stderr, "jikunode: %v\n", err)
 		return 1
